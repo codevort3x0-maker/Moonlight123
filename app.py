@@ -238,24 +238,26 @@ def logout():
 
 @app.route('/dashboard')
 @login_required
-def dashboard():
+def dashboard():  # <-- ЭТО ФУНКЦИЯ
     user = get_current_user()
     conn = get_db()
     
-    # Статистика для дашборда
     upcoming = conn.execute('SELECT COUNT(*) as cnt FROM meetings WHERE status="upcoming"').fetchone()['cnt']
     my_responses = conn.execute('''
         SELECT COUNT(*) as cnt FROM meeting_responses 
         WHERE user_id=? AND response="attending"
     ''', (session['user_id'],)).fetchone()['cnt']
     
+    # Добавляем stats
+    stats = {
+        'users_total': conn.execute('SELECT COUNT(*) as cnt FROM users WHERE approved=1').fetchone()['cnt'],
+        'meetings_total': conn.execute('SELECT COUNT(*) as cnt FROM meetings').fetchone()['cnt']
+    }
+    
     conn.close()
     
-    stats = {
-    'users_total': conn.execute('SELECT COUNT(*) as cnt FROM users WHERE approved=1').fetchone()['cnt'],
-    'meetings_total': conn.execute('SELECT COUNT(*) as cnt FROM meetings').fetchone()['cnt']
-}
-return render_template('dashboard.html', user=user, upcoming=upcoming, my_responses=my_responses, stats=stats)
+    # return ВНУТРИ функции
+    return render_template('dashboard.html', user=user, upcoming=upcoming, my_responses=my_responses, stats=stats)
 
 @app.route('/meetings')
 @login_required
