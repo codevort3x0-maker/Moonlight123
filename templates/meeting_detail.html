@@ -182,12 +182,12 @@
                 <div class="embed-field-name">📌 Статус</div>
                 <div class="embed-field-value">
                     <span class="badge badge-{{ meeting.status }}">
-        {% if meeting.status == 'upcoming' %}📅 Предстоит
-        {% elif meeting.status == 'active' %}▶ Идет сейчас
-        {% elif meeting.status == 'finished' %}✅ Завершено
-        {% elif meeting.status == 'cancelled' %}❌ Отменено
-        {% else %}{{ meeting.status }}{% endif %}
-    </span>    
+                        {% if meeting.status == 'upcoming' %}📅 Предстоит
+                        {% elif meeting.status == 'active' %}▶ Идет сейчас
+                        {% elif meeting.status == 'finished' %}✅ Завершено
+                        {% elif meeting.status == 'cancelled' %}❌ Отменено
+                        {% else %}{{ meeting.status }}{% endif %}
+                    </span>    
                 </div>
             </div>
         </div>
@@ -306,8 +306,9 @@
                 <div style="font-size:11px;color:var(--red);text-transform:uppercase;letter-spacing:1px;font-weight:700">Бездари</div>
             </div>
         </div>
+    </div>
 
-            {% if user.role in ('admin', 'owner') and meeting.status != 'finished' and meeting.status != 'cancelled' %}
+    {% if user.role in ('admin', 'owner') and meeting.status != 'finished' and meeting.status != 'cancelled' %}
     <div class="card" style="margin-bottom:16px">
         <div class="card-header">
             <div class="card-title">🎮 Управление собранием</div>
@@ -328,7 +329,6 @@
         </div>
     </div>
     {% endif %}
-    </div>
 
     <!-- Attendees -->
     <div class="card" style="margin-bottom:16px">
@@ -402,14 +402,26 @@
     </div>
     {% endif %}
 
+    <!-- Voice stats button for finished meetings -->
+    {% if meeting.status == 'finished' %}
+    <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+            <div class="card-title">🎤 Голосовой канал</div>
+        </div>
+        <div style="padding:10px 0">
+            <button class="btn btn-ghost" onclick="loadVoiceStats({{ meeting.id }})">
+                📊 Показать статистику присутствия
+            </button>
+        </div>
+    </div>
+    {% endif %}
+
 </div>
 {% endif %}
-    {% if user.role in ('admin', 'owner') and meeting.status == 'finished' %}
-<button class="btn btn-ghost btn-sm" onclick="loadVoiceStats({{ meeting.id }})">
-    🎤 Статистика голосового канала
-</button>
 
-<!-- Модальное окно со статистикой -->
+</div>
+
+<!-- Voice stats modal -->
 <div class="modal-overlay" id="voice-stats-modal">
     <div class="modal" style="max-width:600px">
         <div class="modal-title">📊 Статистика присутствия в голосовом канале</div>
@@ -421,7 +433,6 @@
         </div>
     </div>
 </div>
-
 
 {% endblock %}
 
@@ -583,11 +594,12 @@ async function loadStats() {
 }
 
 async function loadVoiceStats(mid) {
-        const res = await fetch(`/meetings/${mid}/voice-stats`);
-        const data = await res.json();
+    const res = await fetch(`/meetings/${mid}/voice-stats`);
+    const data = await res.json();
     
-        let html = '<table><thead><tr><th>Пользователь</th><th>Заходов</th><th>Выходов</th><th>Первый вход</th><th>Последний выход</th></tr></thead><tbody>';
+    let html = '<table><thead><tr><th>Пользователь</th><th>Заходов</th><th>Выходов</th><th>Первый вход</th><th>Последний выход</th></tr></thead><tbody>';
     
+    if (data.stats && Object.keys(data.stats).length > 0) {
         for (const [user, stat] of Object.entries(data.stats)) {
             html += `<tr>
                 <td>${user}</td>
@@ -597,12 +609,19 @@ async function loadVoiceStats(mid) {
                 <td>${stat.last_seen}</td>
             </tr>`;
         }
-    
-        html += '</tbody></table>';
-    
-        document.getElementById('voice-stats-content').innerHTML = html;
-        document.getElementById('voice-stats-modal').classList.add('open');
+    } else {
+        html += '<tr><td colspan="5" style="text-align:center;padding:20px;">Нет данных о голосовой активности</td></tr>';
     }
+    
+    html += '</tbody></table>';
+    
+    document.getElementById('voice-stats-content').innerHTML = html;
+    document.getElementById('voice-stats-modal').classList.add('open');
+}
+
+function closeModal(id) {
+    document.getElementById(id).classList.remove('open');
+}
 
 // Auto-load stats for admin/owner
 {% if user.role in ('admin', 'owner') %}
