@@ -42,6 +42,8 @@ def init_db():
             username TEXT UNIQUE NOT NULL,
             password TEXT,
             discord_id TEXT UNIQUE,
+            discord_username TEXT,
+            discord_avatar TEXT,
             role TEXT DEFAULT 'newbie',
             approved INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
