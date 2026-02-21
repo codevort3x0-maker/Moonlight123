@@ -34,6 +34,8 @@ def get_db():
 
 def init_db():
     conn = get_db()
+    
+    # Таблица пользователей
     conn.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,20 +48,7 @@ def init_db():
         )
     ''')
     
-    # Добавляем новые колонки если их нет
-    try:
-        conn.execute('ALTER TABLE meetings ADD COLUMN role_id TEXT')
-    except:
-        pass
-    try:
-        conn.execute('ALTER TABLE meetings ADD COLUMN reminder_sent INTEGER DEFAULT 0')
-    except:
-        pass
-    try:
-        conn.execute('ALTER TABLE meetings ADD COLUMN notify_channel TEXT')
-    except:
-        pass
-    
+    # Таблица собраний
     conn.execute('''
         CREATE TABLE IF NOT EXISTS meetings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +65,7 @@ def init_db():
         )
     ''')
     
+    # Таблица ответов на собрания
     conn.execute('''
         CREATE TABLE IF NOT EXISTS meeting_responses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,6 +79,24 @@ def init_db():
             UNIQUE(meeting_id, user_id),
             FOREIGN KEY (meeting_id) REFERENCES meetings (id),
             FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    ''')
+    
+    # Таблица переводов
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS transfers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization TEXT NOT NULL,
+            recipient TEXT NOT NULL,
+            amount REAL NOT NULL,
+            reason TEXT,
+            status TEXT DEFAULT 'pending',
+            created_by INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            reviewed_by INTEGER,
+            reviewed_at TIMESTAMP,
+            FOREIGN KEY (created_by) REFERENCES users (id),
+            FOREIGN KEY (reviewed_by) REFERENCES users (id)
         )
     ''')
     
@@ -238,7 +246,7 @@ def logout():
 
 @app.route('/dashboard')
 @login_required
-def dashboard():  # <-- ЭТО ФУНКЦИЯ
+def dashboard():
     user = get_current_user()
     conn = get_db()
     
@@ -248,17 +256,229 @@ def dashboard():  # <-- ЭТО ФУНКЦИЯ
         WHERE user_id=? AND response="attending"
     ''', (session['user_id'],)).fetchone()['cnt']
     
-    # Добавляем stats
+    pending_transfers = 0
+    if user['role'] in ('admin', 'owner'):
+        pending_transfers = conn.execute('SELECT COUNT(*) as cnt FROM transfers WHERE status="pending"').fetchone()['cnt']
+    
     stats = {
         'users_total': conn.execute('SELECT COUNT(*) as cnt FROM users WHERE approved=1').fetchone()['cnt'],
-        'meetings_total': conn.execute('SELECT COUNT(*) as cnt FROM meetings').fetchone()['cnt']
+        'meetings_total': conn.execute('SELECT COUNT(*) as cnt FROM meetings').fetchone()['cnt'],
+        'pending_transfers': pending_transfers
     }
     
     conn.close()
     
-    # return ВНУТРИ функции
     return render_template('dashboard.html', user=user, upcoming=upcoming, my_responses=my_responses, stats=stats)
 
+# ========== ПРОФИЛЬ ==========
+@app.route('/profile', methods=['GET', 'POST'])
+@login_required
+def profile():
+    user = get_current_user()
+    conn = get_db()
+    
+    if request.method == 'POST':
+        current_pass = request.form.get('current_password')
+        new_pass = request.form.get('new_password')
+        confirm_pass = request.form.get('confirm_password')
+        
+        if new_pass != confirm_pass:
+            flash('Новые пароли не совпадают', 'error')
+        else:
+            db_user = conn.execute('SELECT * FROM users WHERE id=?', (session['user_id'],)).fetchone()
+            hashed_current = hashlib.sha256(current_pass.encode()).hexdigest()
+            
+            if db_user['password'] != hashed_current:
+                flash('Неверный текущий пароль', 'error')
+            else:
+                hashed_new = hashlib.sha256(new_pass.encode()).hexdigest()
+                conn.execute('UPDATE users SET password=? WHERE id=?', (hashed_new, session['user_id']))
+                conn.commit()
+                flash('Пароль успешно изменен', 'success')
+    
+    # Статистика пользователя
+    my_meetings = conn.execute('''
+        SELECT COUNT(*) as cnt FROM meeting_responses 
+        WHERE user_id=? AND response="attending"
+    ''', (session['user_id'],)).fetchone()['cnt']
+    
+    my_absences = conn.execute('''
+        SELECT COUNT(*) as cnt FROM meeting_responses 
+        WHERE user_id=? AND response="absent"
+    ''', (session['user_id'],)).fetchone()['cnt']
+    
+    conn.close()
+    
+    return render_template('profile.html', user=user, my_meetings=my_meetings, my_absences=my_absences)
+
+# ========== ПЕРЕВОДЫ ==========
+@app.route('/transfers')
+@login_required
+def transfers():
+    user = get_current_user()
+    conn = get_db()
+    
+    if user['role'] in ('admin', 'owner'):
+        transfers = conn.execute('''
+            SELECT t.*, u.username as creator_name, ru.username as reviewer_name
+            FROM transfers t
+            LEFT JOIN users u ON t.created_by = u.id
+            LEFT JOIN users ru ON t.reviewed_by = ru.id
+            ORDER BY t.created_at DESC
+        ''').fetchall()
+    else:
+        transfers = conn.execute('''
+            SELECT t.*, u.username as creator_name, ru.username as reviewer_name
+            FROM transfers t
+            LEFT JOIN users u ON t.created_by = u.id
+            LEFT JOIN users ru ON t.reviewed_by = ru.id
+            WHERE t.created_by=?
+            ORDER BY t.created_at DESC
+        ''', (session['user_id'],)).fetchall()
+    
+    conn.close()
+    return render_template('transfers.html', user=user, transfers=transfers)
+
+@app.route('/transfers/create', methods=['GET', 'POST'])
+@login_required
+def create_transfer():
+    user = get_current_user()
+    
+    if request.method == 'POST':
+        organization = request.form.get('organization', '').strip()
+        recipient = request.form.get('recipient', '').strip()
+        amount = request.form.get('amount', '').strip()
+        reason = request.form.get('reason', '').strip()
+        
+        if not organization or not recipient or not amount or not reason:
+            flash('Заполните все поля', 'error')
+            return redirect(url_for('create_transfer'))
+        
+        try:
+            amount = float(amount)
+        except:
+            flash('Некорректная сумма', 'error')
+            return redirect(url_for('create_transfer'))
+        
+        conn = get_db()
+        conn.execute('''
+            INSERT INTO transfers (organization, recipient, amount, reason, created_by)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (organization, recipient, amount, reason, session['user_id']))
+        conn.commit()
+        conn.close()
+        
+        flash('Заявка на перевод создана', 'success')
+        socketio.emit('transfer_created')
+        return redirect(url_for('transfers'))
+    
+    return render_template('create_transfer.html', user=user)
+
+@app.route('/transfers/<int:tid>/review', methods=['POST'])
+@role_required('admin', 'owner')
+def review_transfer(tid):
+    data = request.json
+    decision = data.get('decision')
+    
+    conn = get_db()
+    conn.execute('''
+        UPDATE transfers 
+        SET status=?, reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP
+        WHERE id=?
+    ''', (decision, session['user_id'], tid))
+    conn.commit()
+    conn.close()
+    
+    socketio.emit('transfer_reviewed', {'transfer_id': tid})
+    return jsonify({'ok': True})
+
+# ========== УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ==========
+@app.route('/users')
+@role_required('admin', 'owner')
+def users_list():
+    user = get_current_user()
+    conn = get_db()
+    
+    if user['role'] == 'admin':
+        users = conn.execute('''
+            SELECT id, username, role, approved, discord_id, created_at 
+            FROM users 
+            ORDER BY created_at DESC
+        ''').fetchall()
+    else:
+        users = conn.execute('''
+            SELECT id, username, role, approved, discord_id, created_at 
+            FROM users 
+            WHERE role != 'admin'
+            ORDER BY created_at DESC
+        ''').fetchall()
+    
+    conn.close()
+    return render_template('users.html', user=user, users=users)
+
+@app.route('/users/<int:uid>/toggle-approve', methods=['POST'])
+@role_required('admin', 'owner')
+def toggle_approve(uid):
+    if uid == session['user_id']:
+        return jsonify({'ok': False, 'error': 'Нельзя изменить себя'})
+    
+    conn = get_db()
+    user = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+    
+    if user['role'] == 'admin' and session['role'] != 'admin':
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Нельзя изменять админа'})
+    
+    new_status = 0 if user['approved'] else 1
+    conn.execute('UPDATE users SET approved=? WHERE id=?', (new_status, uid))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'ok': True, 'approved': new_status})
+
+@app.route('/users/<int:uid>/change-role', methods=['POST'])
+@role_required('admin')
+def change_user_role(uid):
+    if uid == session['user_id']:
+        return jsonify({'ok': False, 'error': 'Нельзя изменить себе роль'})
+    
+    data = request.json
+    new_role = data.get('role')
+    
+    conn = get_db()
+    conn.execute('UPDATE users SET role=? WHERE id=?', (new_role, uid))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'ok': True})
+
+@app.route('/users/<int:uid>/reset-password', methods=['POST'])
+@role_required('admin', 'owner')
+def reset_user_password(uid):
+    if uid == session['user_id']:
+        return jsonify({'ok': False, 'error': 'Нельзя сбросить себе пароль'})
+    
+    conn = get_db()
+    user = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+    
+    if user['role'] == 'admin' and session['role'] != 'admin':
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Нельзя сбросить пароль админа'})
+    
+    new_pass = secrets.token_urlsafe(8)
+    hashed = hashlib.sha256(new_pass.encode()).hexdigest()
+    conn.execute('UPDATE users SET password=? WHERE id=?', (hashed, uid))
+    conn.commit()
+    
+    if user['discord_id'] and DISCORD_TOKEN:
+        dm = create_dm_channel(user['discord_id'])
+        if dm:
+            send_discord_channel_message(dm, content=f"Ваш новый пароль: `{new_pass}`")
+    
+    conn.close()
+    return jsonify({'ok': True})
+
+# ========== СОБРАНИЯ ==========
 @app.route('/meetings')
 @login_required
 def meetings():
@@ -300,7 +520,6 @@ def create_meeting():
         meeting_id = c.lastrowid
         conn.commit()
 
-        # Discord уведомление
         if notify_channel and DISCORD_TOKEN:
             dt = datetime.fromisoformat(scheduled_at)
             site_url = request.host_url.rstrip('/')
@@ -350,7 +569,6 @@ def meeting_detail(mid):
         conn.close()
         return render_template('404.html'), 404
     
-    # Ответы пользователей
     responses = conn.execute('''
         SELECT mr.*, u.username
         FROM meeting_responses mr
@@ -358,13 +576,11 @@ def meeting_detail(mid):
         WHERE mr.meeting_id=?
     ''', (mid,)).fetchall()
     
-    # Мой ответ
     my_response = conn.execute('''
         SELECT * FROM meeting_responses 
         WHERE meeting_id=? AND user_id=?
     ''', (mid, session['user_id'])).fetchone()
     
-    # Разбиваем по категориям для админов
     attendees = []
     absent = []
     if user['role'] in ('admin', 'owner'):
@@ -374,7 +590,6 @@ def meeting_detail(mid):
             elif r['response'] == 'absent':
                 absent.append(r)
     
-    # Пользователи без ответа
     no_response = []
     if user['role'] in ('admin', 'owner'):
         all_users = conn.execute('SELECT id, username FROM users WHERE approved=1').fetchall()
@@ -437,7 +652,6 @@ def meeting_respond(mid):
     
     conn.commit()
 
-    # Логируем в Discord
     if DISCORD_TOKEN:
         user_data = conn.execute('SELECT username FROM users WHERE id=?', (session['user_id'],)).fetchone()
         
@@ -482,7 +696,6 @@ def review_absence(mid, resp_id):
     
     conn = get_db()
     
-    # Получаем информацию об отсутствии
     absence = conn.execute('''
         SELECT mr.*, u.username, u.discord_id, m.title as meeting_title
         FROM meeting_responses mr
@@ -499,7 +712,6 @@ def review_absence(mid, resp_id):
     conn.execute('UPDATE meeting_responses SET reason_status=? WHERE id=?', (new_status, resp_id))
     conn.commit()
     
-    # Отправляем личное сообщение в Discord если есть discord_id
     if absence['discord_id'] and DISCORD_TOKEN:
         dm_channel = create_dm_channel(absence['discord_id'])
         if dm_channel:
@@ -618,54 +830,6 @@ async def check_upcoming_meetings():
             print(f"Ошибка в напоминалке: {e}")
         
         await asyncio.sleep(30)
-
-@app.route('/admin/users')
-@role_required('admin')
-def admin_users():
-    user = get_current_user()
-    conn = get_db()
-    users = conn.execute('SELECT id, username, role, approved, created_at FROM users ORDER BY created_at DESC').fetchall()
-    conn.close()
-    return render_template('users.html', user=user, users=users)
-
-@app.route('/admin/users/<int:uid>/approve', methods=['POST'])
-@role_required('admin')
-def approve_user(uid):
-    conn = get_db()
-    conn.execute('UPDATE users SET approved=1 WHERE id=?', (uid,))
-    conn.commit()
-    conn.close()
-    return jsonify({'ok': True})
-
-@app.route('/admin/users/<int:uid>/role', methods=['POST'])
-@role_required('admin')
-def change_role(uid):
-    data = request.json
-    role = data.get('role')
-    conn = get_db()
-    conn.execute('UPDATE users SET role=? WHERE id=?', (role, uid))
-    conn.commit()
-    conn.close()
-    return jsonify({'ok': True})
-
-@app.route('/admin/users/<int:uid>/reset-password', methods=['POST'])
-@role_required('admin')
-def reset_password(uid):
-    conn = get_db()
-    user = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
-    if user and user['discord_id'] and DISCORD_TOKEN:
-        new_pass = secrets.token_urlsafe(8)
-        hashed = hashlib.sha256(new_pass.encode()).hexdigest()
-        conn.execute('UPDATE users SET password=? WHERE id=?', (hashed, uid))
-        conn.commit()
-        
-        # Отправляем в DM
-        dm = create_dm_channel(user['discord_id'])
-        if dm:
-            send_discord_channel_message(dm, content=f"Ваш новый пароль: `{new_pass}`")
-    
-    conn.close()
-    return jsonify({'ok': True})
 
 if __name__ == "__main__":
     # Запускаем фоновую задачу
