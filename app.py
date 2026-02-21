@@ -125,6 +125,19 @@ def init_db():
             FOREIGN KEY (meeting_id) REFERENCES meetings (id)
         )
     ''')
+
+    # В init_db() после других таблиц
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS voice_activity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL,
+            user_id TEXT NOT NULL,
+            discord_username TEXT NOT NULL,
+            action TEXT NOT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (meeting_id) REFERENCES meetings (id)
+        )
+    ''')
     
     # Создаем админа по умолчанию
     admin = conn.execute('SELECT * FROM users WHERE username="admin"').fetchone()
@@ -1053,78 +1066,86 @@ def meeting_stats(mid):
 def attendance_stats(mid):
     """Полная статистика по собранию: кто отметился, кто пришел, кто не пришел"""
     user = get_current_user()
+    if user['role'] not in ('admin', 'owner'):
+        return jsonify({'error': 'Forbidden'}), 403
+    
     conn = get_db()
-    
-    # Получаем всех кто отметился на сайте
-    responses = conn.execute('''
-        SELECT mr.*, u.username, u.discord_id 
-        FROM meeting_responses mr
-        JOIN users u ON mr.user_id = u.id
-        WHERE mr.meeting_id=?
-    ''', (mid,)).fetchall()
-    
-    # Получаем голосовую активность
-    voice = conn.execute('''
-        SELECT * FROM voice_activity 
-        WHERE meeting_id=?
-        ORDER BY timestamp
-    ''', (mid,)).fetchall()
-    
-    # Получаем собрание
-    meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
-    
-    # Анализируем
-    stats = {
-        'total_responded': len(responses),
-        'attending_site': 0,  # Отметили "Приду" на сайте
-        'absent_site': 0,      # Отметили "Не приду" на сайте
-        'came_to_voice': 0,     # Пришли в голосовой канал
-        'confirmed': [],        # Отметили и пришли
-        'no_show': [],          # Отметили но не пришли
-        'unexpected': [],       # Не отмечали но пришли
-        'voice_participants': set()
-    }
-    
-    # Собираем кто был в голосовом канале
-    voice_users = set()
-    for v in voice:
-        if v['action'] == 'join':
-            voice_users.add(v['user_id'])
-            stats['voice_participants'].add(v['discord_username'])
-    
-    stats['total_voice'] = len(voice_users)
-    
-    # Анализируем ответы
-    for r in responses:
-        if r['response'] == 'attending':
-            stats['attending_site'] += 1
-            if r['discord_id'] in voice_users:
-                stats['came_to_voice'] += 1
-                stats['confirmed'].append({
-                    'username': r['username'],
-                    'discord': r['discord_username']
-                })
+    try:
+        # Получаем всех кто отметился на сайте
+        responses = conn.execute('''
+            SELECT mr.*, u.username, u.discord_id 
+            FROM meeting_responses mr
+            JOIN users u ON mr.user_id = u.id
+            WHERE mr.meeting_id=?
+        ''', (mid,)).fetchall()
+        
+        # Получаем голосовую активность
+        voice = conn.execute('''
+            SELECT * FROM voice_activity 
+            WHERE meeting_id=?
+            ORDER BY timestamp
+        ''', (mid,)).fetchall()
+        
+        # Получаем собрание
+        meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
+        
+        # Анализируем
+        stats = {
+            'total_responded': len(responses),
+            'attending_site': 0,
+            'absent_site': 0,
+            'came_to_voice': 0,
+            'confirmed': [],
+            'no_show': [],
+            'unexpected': [],
+            'voice_participants': []
+        }
+        
+        # Собираем кто был в голосовом канале
+        voice_users = set()
+        voice_names = set()
+        for v in voice:
+            if v['action'] == 'join':
+                voice_users.add(v['user_id'])
+                voice_names.add(v['discord_username'])
+        
+        stats['total_voice'] = len(voice_users)
+        stats['voice_participants'] = list(voice_names)
+        
+        # Анализируем ответы
+        for r in responses:
+            if r['response'] == 'attending':
+                stats['attending_site'] += 1
+                if r['discord_id'] and r['discord_id'] in voice_users:
+                    stats['came_to_voice'] += 1
+                    stats['confirmed'].append({
+                        'username': r['username'],
+                        'discord': r['discord_username']
+                    })
+                else:
+                    stats['no_show'].append({
+                        'username': r['username'],
+                        'discord': r['discord_username']
+                    })
             else:
-                stats['no_show'].append({
-                    'username': r['username'],
-                    'discord': r['discord_username']
-                })
-        else:
-            stats['absent_site'] += 1
-    
-    # Кто пришел без отметки
-    for v in voice:
-        if v['user_id'] not in [r['discord_id'] for r in responses if r['discord_id']]:
-            stats['unexpected'].append({
-                'discord': v['discord_username']
-            })
-    
-    # Убираем дубликаты
-    stats['unexpected'] = list({u['discord'] for u in stats['unexpected']})
-    
-    conn.close()
-    
-    return jsonify(stats)
+                stats['absent_site'] += 1
+        
+        # Кто пришел без отметки
+        responded_discord_ids = set(r['discord_id'] for r in responses if r['discord_id'])
+        for v in voice:
+            if v['action'] == 'join' and v['user_id'] not in responded_discord_ids:
+                if v['discord_username'] not in [u['discord'] for u in stats['unexpected']]:
+                    stats['unexpected'].append({
+                        'discord': v['discord_username']
+                    })
+        
+        conn.close()
+        return jsonify(stats)
+        
+    except Exception as e:
+        conn.close()
+        print(f"Error in attendance_stats: {e}")
+        return jsonify({'error': str(e)}), 500
 
 # Фоновая задача для напоминаний
 async def check_upcoming_meetings():
