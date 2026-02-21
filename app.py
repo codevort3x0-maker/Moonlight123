@@ -613,6 +613,19 @@ def meeting_respond(mid):
         conn.close()
         return jsonify({'ok': False, 'error': 'Собрание не найдено'})
 
+    # Проверяем существующий ответ
+    existing = conn.execute(
+        'SELECT response FROM meeting_responses WHERE meeting_id=? AND user_id=?',
+        (mid, session['user_id'])
+    ).fetchone()
+
+    # Если уже выбрал "Приду" - запрещаем менять
+    if existing and existing['response'] == 'attending':
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Вы уже подтвердили участие. Изменить ответ нельзя.'})
+
+    # Если выбрал "Приду" сейчас - сохраняем без возможности изменения
+    # Если выбрал "Не приду" - можно будет менять позже
     conn.execute('''
         INSERT INTO meeting_responses (meeting_id, user_id, discord_username, response, absence_reason, reason_status)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -620,14 +633,19 @@ def meeting_respond(mid):
             discord_username=excluded.discord_username,
             response=excluded.response,
             absence_reason=excluded.absence_reason,
-            reason_status=CASE WHEN excluded.response='absent' THEN 'pending' ELSE 'n/a' END
+            reason_status=CASE 
+                WHEN excluded.response='absent' THEN 'pending'
+                WHEN excluded.response='attending' AND old.response='absent' THEN 'n/a'
+                ELSE reason_status 
+            END
     ''', (mid, session['user_id'], discord_username, response, absence_reason,
           'pending' if response == 'absent' else 'n/a'))
+    
     conn.commit()
     conn.close()
 
     socketio.emit('meeting_updated', {'meeting_id': mid})
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'message': 'Ответ сохранен'})
 
 @app.route('/meetings/<int:mid>/absence/<int:resp_id>/review', methods=['POST'])
 @role_required('admin', 'owner')
