@@ -7,7 +7,6 @@ from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
 from flask_socketio import SocketIO, emit
 import requests
-import json
 import asyncio
 from dotenv import load_dotenv
 
@@ -25,8 +24,8 @@ DISCORD_REDIRECT_URI = os.getenv('DISCORD_REDIRECT_URI')
 GUILD_ID = os.getenv('GUILD_ID')
 
 # Каналы для логирования
-ATTENDANCE_CHANNEL = "1439711992264003786"  # Пришедшие
-ABSENCE_CHANNEL = "1405865354479009912"      # Отписи
+ATTENDANCE_CHANNEL = "1439711992264003786"
+ABSENCE_CHANNEL = "1405865354479009912"
 
 def get_db():
     conn = sqlite3.connect('database/moonlight.db')
@@ -64,20 +63,11 @@ def init_db():
             role_id TEXT,
             reminder_sent INTEGER DEFAULT 0,
             notify_channel TEXT,
+            voice_channel_id TEXT,
+            dm_sent INTEGER DEFAULT 0,
             FOREIGN KEY (created_by) REFERENCES users (id)
         )
     ''')
-
-        # Добавь после создания таблицы meetings
-    try:
-        conn.execute('ALTER TABLE meetings ADD COLUMN voice_channel_id TEXT')
-    except:
-        pass
-
-    try:
-        conn.execute('ALTER TABLE meetings ADD COLUMN voice_stats TEXT')  # для хранения статистики в JSON
-    except:
-        pass
     
     # Таблица ответов на собрания
     conn.execute('''
@@ -113,7 +103,8 @@ def init_db():
             FOREIGN KEY (reviewed_by) REFERENCES users (id)
         )
     ''')
-
+    
+    # Таблица голосовой активности
     conn.execute('''
         CREATE TABLE IF NOT EXISTS voice_activity (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,7 +117,7 @@ def init_db():
         )
     ''')
     
-        # Создаем админа по умолчанию
+    # Создаем админа по умолчанию
     admin = conn.execute('SELECT * FROM users WHERE username="admin"').fetchone()
     if not admin:
         hashed = hashlib.sha256('admin123'.encode()).hexdigest()
@@ -213,6 +204,191 @@ def verify_discord_member(username):
         pass
     return False
 
+def create_dm_channel(user_id):
+    """Создает DM канал с пользователем"""
+    url = "https://discord.com/api/v10/users/@me/channels"
+    headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
+    data = {"recipient_id": user_id}
+    
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            return response.json().get('id')
+    except:
+        pass
+    return None
+
+async def send_dm_to_role(role_id, content, embed=None):
+    """Отправляет ЛС всем участникам с указанной ролью"""
+    if not DISCORD_TOKEN or not GUILD_ID:
+        return
+    
+    try:
+        url = f"https://discord.com/api/v10/guilds/{GUILD_ID}/members?limit=1000"
+        headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
+        
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            print(f"Ошибка получения участников: {response.status_code}")
+            return
+        
+        members = response.json()
+        
+        for member in members:
+            if role_id in member.get('roles', []):
+                user_id = member['user']['id']
+                
+                dm_url = "https://discord.com/api/v10/users/@me/channels"
+                dm_data = {"recipient_id": user_id}
+                dm_response = requests.post(dm_url, headers=headers, json=dm_data)
+                
+                if dm_response.status_code == 200:
+                    dm_channel = dm_response.json()['id']
+                    
+                    msg_url = f"https://discord.com/api/v10/channels/{dm_channel}/messages"
+                    msg_data = {"content": content}
+                    if embed:
+                        msg_data["embeds"] = [embed]
+                    
+                    requests.post(msg_url, headers=headers, json=msg_data)
+                    print(f"✅ ЛС отправлено {member['user']['username']}")
+                    
+                    await asyncio.sleep(0.5)
+                    
+    except Exception as e:
+        print(f"Ошибка отправки ЛС: {e}")
+
+async def monitor_voice_channel(meeting_id, voice_channel_id):
+    """Мониторинг голосового канала во время собрания"""
+    if not DISCORD_TOKEN or not voice_channel_id:
+        print(f"❌ Нет токена или ID канала для собрания {meeting_id}")
+        return
+    
+    print(f"🎤 Начинаем мониторинг собрания {meeting_id} в канале {voice_channel_id}")
+    
+    try:
+        url = f"https://discord.com/api/v10/channels/{voice_channel_id}"
+        headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
+        
+        channel_check = requests.get(url, headers=headers)
+        if channel_check.status_code != 200:
+            print(f"❌ Нет доступа к каналу {voice_channel_id}: {channel_check.status_code}")
+            return
+        
+        tracked_users = {}
+        
+        while True:
+            try:
+                conn = get_db()
+                meeting = conn.execute('SELECT status, title FROM meetings WHERE id=?', (meeting_id,)).fetchone()
+                
+                if not meeting or meeting['status'] != 'active':
+                    print(f"⏹ Собрание {meeting_id} завершено, останавливаем мониторинг")
+                    conn.close()
+                    break
+                
+                response = requests.get(f"{url}/members", headers=headers)
+                
+                if response.status_code == 200:
+                    members = response.json()
+                    current_users = {}
+                    
+                    for m in members:
+                        user_id = m['user']['id']
+                        username = m['user']['username']
+                        current_users[user_id] = username
+                    
+                    for uid, username in current_users.items():
+                        if uid not in tracked_users:
+                            joined_at = datetime.now()
+                            tracked_users[uid] = {'name': username, 'joined_at': joined_at}
+                            
+                            try:
+                                conn.execute('''
+                                    INSERT INTO voice_activity 
+                                    (meeting_id, user_id, discord_username, action, timestamp) 
+                                    VALUES (?, ?, ?, ?, ?)
+                                ''', (meeting_id, uid, username, 'join', joined_at.strftime('%Y-%m-%d %H:%M:%S')))
+                                conn.commit()
+                                print(f"✅ {username} зашел в голосовой канал")
+                                
+                                user_in_db = conn.execute('SELECT * FROM users WHERE discord_id=?', (uid,)).fetchone()
+                                
+                                if not user_in_db:
+                                    dm_url = "https://discord.com/api/v10/users/@me/channels"
+                                    dm_data = {"recipient_id": uid}
+                                    dm_response = requests.post(dm_url, headers=headers, json=dm_data)
+                                    
+                                    if dm_response.status_code == 200:
+                                        dm_channel = dm_response.json()['id']
+                                        site_url = request.host_url.rstrip('/') if request else "https://moonlight.app"
+                                        register_url = f"{site_url}/login"
+                                        
+                                        msg_data = {
+                                            "content": f"⚠ **Внимание!**\nВы зашли в голосовой канал собрания, но не зарегистрированы на сайте.\n🔗 **Ссылка для регистрации:** {register_url}\n\nПосле регистрации подтвердите участие в собрании!"
+                                        }
+                                        requests.post(f"https://discord.com/api/v10/channels/{dm_channel}/messages", 
+                                                    headers=headers, json=msg_data)
+                                
+                                else:
+                                    response_check = conn.execute('''
+                                        SELECT * FROM meeting_responses 
+                                        WHERE meeting_id=? AND user_id=?
+                                    ''', (meeting_id, user_in_db['id'])).fetchone()
+                                    
+                                    if not response_check:
+                                        dm_url = "https://discord.com/api/v10/users/@me/channels"
+                                        dm_data = {"recipient_id": uid}
+                                        dm_response = requests.post(dm_url, headers=headers, json=dm_data)
+                                        
+                                        if dm_response.status_code == 200:
+                                            dm_channel = dm_response.json()['id']
+                                            site_url = request.host_url.rstrip('/') if request else "https://moonlight.app"
+                                            meeting_url = f"{site_url}/meeting/{meeting_id}"
+                                            
+                                            msg_data = {
+                                                "content": f"⚠ **Внимание!**\nВы зашли в голосовой канал собрания **{meeting['title']}**, но не подтвердили участие на сайте.\n🔗 **Ссылка для подтверждения:** {meeting_url}"
+                                            }
+                                            requests.post(f"https://discord.com/api/v10/channels/{dm_channel}/messages", 
+                                                        headers=headers, json=msg_data)
+                                    
+                            except Exception as e:
+                                print(f"Ошибка логирования захода: {e}")
+                    
+                    to_remove = []
+                    for uid, data in tracked_users.items():
+                        if uid not in current_users:
+                            to_remove.append(uid)
+                            leave_time = datetime.now()
+                            
+                            try:
+                                conn.execute('''
+                                    INSERT INTO voice_activity 
+                                    (meeting_id, user_id, discord_username, action, timestamp) 
+                                    VALUES (?, ?, ?, ?, ?)
+                                ''', (meeting_id, uid, data['name'], 'leave', leave_time.strftime('%Y-%m-%d %H:%M:%S')))
+                                conn.commit()
+                                print(f"👋 {data['name']} вышел из голосового канала")
+                            except Exception as e:
+                                print(f"Ошибка логирования выхода: {e}")
+                    
+                    for uid in to_remove:
+                        del tracked_users[uid]
+                
+                conn.close()
+                
+            except Exception as e:
+                print(f"Ошибка в цикле мониторинга: {e}")
+                try:
+                    conn.close()
+                except:
+                    pass
+            
+            await asyncio.sleep(5)
+            
+    except Exception as e:
+        print(f"❌ Фатальная ошибка мониторинга: {e}")
+
 @app.route('/')
 def index():
     if 'user_id' in session:
@@ -265,106 +441,6 @@ def register():
     
     return jsonify({'ok': True, 'message': 'Регистрация успешна, ожидайте подтверждения'})
 
-@app.route('/auth/discord')
-def auth_discord():
-    if not DISCORD_CLIENT_ID:
-        flash('Discord OAuth не настроен', 'error')
-        return redirect(url_for('login'))
-    
-    params = {
-        'client_id': DISCORD_CLIENT_ID,
-        'redirect_uri': DISCORD_REDIRECT_URI,
-        'response_type': 'code',
-        'scope': 'identify'
-    }
-    url = f"https://discord.com/api/oauth2/authorize?{requests.compat.urlencode(params)}"
-    return redirect(url)
-
-@app.route('/auth/discord/callback')
-def auth_discord_callback():
-    code = request.args.get('code')
-    if not code:
-        flash('Ошибка авторизации', 'error')
-        return redirect(url_for('login'))
-    
-    # Обмен кода на токен
-    data = {
-        'client_id': DISCORD_CLIENT_ID,
-        'client_secret': DISCORD_CLIENT_SECRET,
-        'grant_type': 'authorization_code',
-        'code': code,
-        'redirect_uri': DISCORD_REDIRECT_URI
-    }
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    
-    token_resp = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
-    if token_resp.status_code != 200:
-        flash('Ошибка получения токена', 'error')
-        return redirect(url_for('login'))
-    
-    token_data = token_resp.json()
-    access_token = token_data.get('access_token')
-    
-    # Получаем информацию о пользователе
-    user_resp = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}'})
-    if user_resp.status_code != 200:
-        flash('Ошибка получения данных пользователя', 'error')
-        return redirect(url_for('login'))
-    
-    discord_user = user_resp.json()
-    discord_id = discord_user['id']
-    discord_username = discord_user['username']
-    discord_avatar = discord_user.get('avatar')
-    
-    conn = get_db()
-    
-    # Проверяем есть ли пользователь с таким discord_id
-    user = conn.execute('SELECT * FROM users WHERE discord_id=?', (discord_id,)).fetchone()
-    
-    if user:
-        # Уже есть - логиним
-        if not user['approved']:
-            flash('Аккаунт ожидает подтверждения', 'error')
-            conn.close()
-            return redirect(url_for('login'))
-        
-        session['user_id'] = user['id']
-        session['username'] = user['username']
-        session['role'] = user['role']
-        conn.close()
-        return redirect(url_for('dashboard'))
-    
-    # Проверяем есть ли пользователь с таким username (на случай если уже регился по логину)
-    existing = conn.execute('SELECT * FROM users WHERE username=?', (discord_username,)).fetchone()
-    
-    if existing:
-        # Обновляем discord_id у существующего пользователя
-        conn.execute('UPDATE users SET discord_id=?, discord_username=?, discord_avatar=? WHERE id=?',
-                    (discord_id, discord_username, discord_avatar, existing['id']))
-        conn.commit()
-        
-        if not existing['approved']:
-            flash('Аккаунт ожидает подтверждения', 'error')
-            conn.close()
-            return redirect(url_for('login'))
-        
-        session['user_id'] = existing['id']
-        session['username'] = existing['username']
-        session['role'] = existing['role']
-        conn.close()
-        return redirect(url_for('dashboard'))
-    
-    # Создаем нового пользователя
-    conn.execute('''
-        INSERT INTO users (username, discord_id, discord_username, discord_avatar, role, approved)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (discord_username, discord_id, discord_username, discord_avatar, 'newbie', 0))
-    conn.commit()
-    
-    flash('Регистрация успешна, ожидайте подтверждения', 'success')
-    conn.close()
-    return redirect(url_for('login'))
-
 @app.route('/logout')
 def logout():
     session.clear()
@@ -396,7 +472,6 @@ def dashboard():
     
     return render_template('dashboard.html', user=user, upcoming=upcoming, my_responses=my_responses, stats=stats)
 
-# ========== ПРОФИЛЬ ==========
 @app.route('/profile', methods=['GET', 'POST'])
 @login_required
 def profile():
@@ -422,7 +497,6 @@ def profile():
                 conn.commit()
                 flash('Пароль успешно изменен', 'success')
     
-    # Статистика пользователя
     my_meetings = conn.execute('''
         SELECT COUNT(*) as cnt FROM meeting_responses 
         WHERE user_id=? AND response="attending"
@@ -437,7 +511,6 @@ def profile():
     
     return render_template('profile.html', user=user, my_meetings=my_meetings, my_absences=my_absences)
 
-# ========== ПЕРЕВОДЫ ==========
 @app.route('/transfers')
 @login_required
 def transfers():
@@ -518,7 +591,6 @@ def review_transfer(tid):
     socketio.emit('transfer_reviewed', {'transfer_id': tid})
     return jsonify({'ok': True})
 
-# ========== УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ==========
 @app.route('/users')
 @role_required('admin', 'owner')
 def users_list():
@@ -582,26 +654,6 @@ def reject_user(uid):
     
     return jsonify({'ok': True})
 
-@app.route('/users/<int:uid>/toggle-approve', methods=['POST'])
-@role_required('admin', 'owner')
-def toggle_approve(uid):
-    if uid == session['user_id']:
-        return jsonify({'ok': False, 'error': 'Нельзя изменить себя'})
-    
-    conn = get_db()
-    user = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
-    
-    if user['role'] == 'admin' and session['role'] != 'admin':
-        conn.close()
-        return jsonify({'ok': False, 'error': 'Нельзя изменять админа'})
-    
-    new_status = 0 if user['approved'] else 1
-    conn.execute('UPDATE users SET approved=? WHERE id=?', (new_status, uid))
-    conn.commit()
-    conn.close()
-    
-    return jsonify({'ok': True, 'approved': new_status})
-
 @app.route('/users/<int:uid>/change-role', methods=['POST'])
 @role_required('admin')
 def change_user_role(uid):
@@ -642,9 +694,8 @@ def reset_user_password(uid):
             send_discord_channel_message(dm, content=f"Ваш новый пароль: `{new_pass}`")
     
     conn.close()
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'new_password': new_pass})
 
-# ========== СОБРАНИЯ ==========
 @app.route('/meetings')
 @login_required
 def meetings():
@@ -680,10 +731,10 @@ def create_meeting():
             return redirect(url_for('create_meeting'))
 
         conn = get_db()
-    c = conn.execute(
-        '''INSERT INTO meetings 
-           (title, description, scheduled_at, created_by, role_id, notify_channel, voice_channel_id) 
-           VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        c = conn.execute(
+            '''INSERT INTO meetings 
+               (title, description, scheduled_at, created_by, role_id, notify_channel, voice_channel_id, dm_sent) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, 0)''',
             (title, description, scheduled_at, session['user_id'], 
              role_id if role_id else None, 
              notify_channel if notify_channel else None,
@@ -692,11 +743,10 @@ def create_meeting():
         meeting_id = c.lastrowid
         conn.commit()
 
-        # Discord уведомление в канал
         if notify_channel and DISCORD_TOKEN:
             dt = datetime.fromisoformat(scheduled_at)
             site_url = request.host_url.rstrip('/')
-            meeting_url = f"{site_url}/meetings/{meeting_id}"
+            meeting_url = f"{site_url}/meeting/{meeting_id}"
             
             content = None
             if role_id:
@@ -719,7 +769,6 @@ def create_meeting():
                 conn.execute('UPDATE meetings SET discord_message_id=? WHERE id=?', (msg_id, meeting_id))
                 conn.commit()
             
-            # Отправляем ЛС всем с ролью
             if role_id:
                 dm_content = f"📢 **Новое собрание: {title}**\n📅 Время: {dt.strftime('%d.%m.%Y %H:%M')}\n🔗 Ссылка для подтверждения: {meeting_url}\n\nПожалуйста, подтвердите участие на сайте!"
                 asyncio.create_task(send_dm_to_role(role_id, dm_content))
@@ -904,125 +953,6 @@ def review_absence(mid, resp_id):
     socketio.emit('absence_reviewed', {'meeting_id': mid})
     return jsonify({'ok': True})
 
-def create_dm_channel(user_id):
-    """Создает DM канал с пользователем"""
-    url = "https://discord.com/api/v10/users/@me/channels"
-    headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
-    data = {"recipient_id": user_id}
-    
-    try:
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code == 200:
-            return response.json().get('id')
-    except:
-        pass
-    return None
-
-@app.route('/meetings/<int:mid>/start', methods=['POST'])
-@role_required('admin', 'owner')
-def start_meeting(mid):
-    conn = get_db()
-    try:
-        meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
-        
-        if not meeting:
-            conn.close()
-            return jsonify({'ok': False, 'error': 'Собрание не найдено'})
-        
-        # Обновляем статус
-        conn.execute('UPDATE meetings SET status="active" WHERE id=?', (mid,))
-        conn.commit()
-        
-        # Запускаем мониторинг если указан голосовой канал
-        if meeting['voice_channel_id'] and DISCORD_TOKEN:
-            asyncio.create_task(monitor_voice_channel(mid, meeting['voice_channel_id']))
-        
-        # Уведомление в канал о начале
-        if meeting['notify_channel'] and DISCORD_TOKEN:
-            site_url = request.host_url.rstrip('/')
-            meeting_url = f"{site_url}/meeting/{mid}"
-            embed = {
-                "title": "▶ Собрание началось!",
-                "description": f"**{meeting['title']}**\nГолосовой канал активен.",
-                "color": 0xFEE75C,
-                "fields": [
-                    {"name": "🔗 Ссылка", "value": f"[Перейти к собранию]({meeting_url})", "inline": False}
-                ]
-            }
-            send_discord_channel_message(meeting['notify_channel'], embed)
-        
-        conn.close()
-        socketio.emit('meeting_updated', {'meeting_id': mid})
-        return jsonify({'ok': True})
-        
-    except Exception as e:
-        conn.close()
-        print(f"Error starting meeting: {e}")
-        return jsonify({'ok': False, 'error': str(e)}), 500
-
-@app.route('/meetings/<int:mid>/voice-stats')
-@login_required
-def voice_stats(mid):
-    user = get_current_user()
-    conn = get_db()
-    
-    activity = conn.execute('''
-        SELECT * FROM voice_activity 
-        WHERE meeting_id=? 
-        ORDER BY timestamp
-    ''', (mid,)).fetchall()
-    
-    # Группируем по пользователям
-    stats = {}
-    for a in activity:
-        if a['discord_username'] not in stats:
-            stats[a['discord_username']] = {'joins': 0, 'leaves': 0, 'first_seen': a['timestamp'], 'last_seen': a['timestamp']}
-        
-        if a['action'] == 'join':
-            stats[a['discord_username']]['joins'] += 1
-        else:
-            stats[a['discord_username']]['leaves'] += 1
-        
-        stats[a['discord_username']]['last_seen'] = a['timestamp']
-    
-    conn.close()
-    
-    return jsonify({'stats': stats})
-
-@app.route('/meetings/<int:mid>/finish', methods=['POST'])
-@role_required('admin', 'owner')
-def finish_meeting(mid):
-    conn = get_db()
-    meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
-    
-    if not meeting:
-        conn.close()
-        return jsonify({'ok': False, 'error': 'Собрание не найдено'})
-    
-    conn.execute('UPDATE meetings SET status="finished" WHERE id=?', (mid,))
-    conn.commit()
-    conn.close()
-    
-    socketio.emit('meeting_updated', {'meeting_id': mid})
-    return jsonify({'ok': True})
-
-@app.route('/meetings/<int:mid>/cancel', methods=['POST'])
-@role_required('admin', 'owner')
-def cancel_meeting(mid):
-    conn = get_db()
-    meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
-    
-    if not meeting:
-        conn.close()
-        return jsonify({'ok': False, 'error': 'Собрание не найдено'})
-    
-    conn.execute('UPDATE meetings SET status="cancelled" WHERE id=?', (mid,))
-    conn.commit()
-    conn.close()
-    
-    socketio.emit('meeting_updated', {'meeting_id': mid})
-    return jsonify({'ok': True})
-
 @app.route('/api/verify-discord', methods=['POST'])
 def api_verify_discord():
     data = request.json
@@ -1065,6 +995,36 @@ def meeting_stats(mid):
         'no_response': no_response
     })
 
+@app.route('/meetings/<int:mid>/voice-stats')
+@login_required
+def voice_stats(mid):
+    user = get_current_user()
+    if user['role'] not in ('admin', 'owner'):
+        return jsonify({'error': 'Forbidden'}), 403
+    
+    conn = get_db()
+    activity = conn.execute('''
+        SELECT * FROM voice_activity 
+        WHERE meeting_id=? 
+        ORDER BY timestamp
+    ''', (mid,)).fetchall()
+    
+    stats = {}
+    for a in activity:
+        if a['discord_username'] not in stats:
+            stats[a['discord_username']] = {'joins': 0, 'leaves': 0, 'first_seen': a['timestamp'], 'last_seen': a['timestamp']}
+        
+        if a['action'] == 'join':
+            stats[a['discord_username']]['joins'] += 1
+        else:
+            stats[a['discord_username']]['leaves'] += 1
+        
+        stats[a['discord_username']]['last_seen'] = a['timestamp']
+    
+    conn.close()
+    
+    return jsonify({'stats': stats})
+
 @app.route('/meetings/<int:mid>/attendance-stats')
 @login_required
 def attendance_stats(mid):
@@ -1075,7 +1035,6 @@ def attendance_stats(mid):
     
     conn = get_db()
     try:
-        # Получаем всех кто отметился на сайте
         responses = conn.execute('''
             SELECT mr.*, u.username, u.discord_id, u.discord_username
             FROM meeting_responses mr
@@ -1083,25 +1042,25 @@ def attendance_stats(mid):
             WHERE mr.meeting_id=?
         ''', (mid,)).fetchall()
         
-        # Получаем голосовую активность
         voice = conn.execute('''
             SELECT * FROM voice_activity 
             WHERE meeting_id=?
             ORDER BY timestamp
         ''', (mid,)).fetchall()
         
-        # Анализируем
+        meeting = conn.execute('SELECT title FROM meetings WHERE id=?', (mid,)).fetchone()
+        
         stats = {
             'attending_site': 0,
             'absent_site': 0,
             'came_to_voice': 0,
+            'total_voice': 0,
             'confirmed': [],
             'no_show': [],
             'unexpected': [],
             'voice_log': []
         }
         
-        # Собираем кто был в голосовом канале (уникальные)
         voice_users = set()
         for v in voice:
             if v['action'] == 'join':
@@ -1114,7 +1073,6 @@ def attendance_stats(mid):
         
         stats['total_voice'] = len(voice_users)
         
-        # Анализируем ответы
         for r in responses:
             if r['response'] == 'attending':
                 stats['attending_site'] += 1
@@ -1132,7 +1090,6 @@ def attendance_stats(mid):
             else:
                 stats['absent_site'] += 1
         
-        # Кто пришел без отметки
         responded_discord_ids = set()
         for r in responses:
             if r['discord_id']:
@@ -1145,7 +1102,6 @@ def attendance_stats(mid):
                         'discord': v['discord_username']
                     })
         
-        # Убираем дубликаты
         seen = set()
         unique_unexpected = []
         for u in stats['unexpected']:
@@ -1161,7 +1117,201 @@ def attendance_stats(mid):
         conn.close()
         print(f"Error in attendance_stats: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/meetings/<int:mid>/start', methods=['POST'])
+@role_required('admin', 'owner')
+def start_meeting(mid):
+    conn = get_db()
+    try:
+        meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
         
+        if not meeting:
+            conn.close()
+            return jsonify({'ok': False, 'error': 'Собрание не найдено'})
+        
+        conn.execute('UPDATE meetings SET status="active" WHERE id=?', (mid,))
+        conn.commit()
+        
+        if meeting['voice_channel_id'] and DISCORD_TOKEN:
+            asyncio.create_task(monitor_voice_channel(mid, meeting['voice_channel_id']))
+        
+        if meeting['notify_channel'] and DISCORD_TOKEN:
+            site_url = request.host_url.rstrip('/')
+            meeting_url = f"{site_url}/meetings/{mid}"
+            embed = {
+                "title": "▶ Собрание началось!",
+                "description": f"**{meeting['title']}**\nГолосовой канал активен.",
+                "color": 0xFEE75C,
+                "fields": [
+                    {"name": "🔗 Ссылка", "value": f"[Перейти к собранию]({meeting_url})", "inline": False}
+                ]
+            }
+            send_discord_channel_message(meeting['notify_channel'], embed)
+        
+        conn.close()
+        socketio.emit('meeting_updated', {'meeting_id': mid})
+        return jsonify({'ok': True})
+        
+    except Exception as e:
+        conn.close()
+        print(f"Error starting meeting: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/meetings/<int:mid>/finish', methods=['POST'])
+@role_required('admin', 'owner')
+def finish_meeting(mid):
+    conn = get_db()
+    try:
+        meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
+        
+        if not meeting:
+            conn.close()
+            return jsonify({'ok': False, 'error': 'Собрание не найдено'})
+        
+        conn.execute('UPDATE meetings SET status="finished" WHERE id=?', (mid,))
+        conn.commit()
+        
+        if meeting['notify_channel'] and DISCORD_TOKEN:
+            embed = {
+                "title": "✅ Собрание завершено",
+                "description": f"**{meeting['title']}**\nСпасибо за участие!",
+                "color": 0x57F287
+            }
+            send_discord_channel_message(meeting['notify_channel'], embed)
+        
+        conn.close()
+        socketio.emit('meeting_updated', {'meeting_id': mid})
+        return jsonify({'ok': True})
+        
+    except Exception as e:
+        conn.close()
+        print(f"Error finishing meeting: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/meetings/<int:mid>/cancel', methods=['POST'])
+@role_required('admin', 'owner')
+def cancel_meeting(mid):
+    conn = get_db()
+    try:
+        meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
+        
+        if not meeting:
+            conn.close()
+            return jsonify({'ok': False, 'error': 'Собрание не найдено'})
+        
+        conn.execute('UPDATE meetings SET status="cancelled" WHERE id=?', (mid,))
+        conn.commit()
+        
+        if meeting['notify_channel'] and DISCORD_TOKEN:
+            embed = {
+                "title": "❌ Собрание отменено",
+                "description": f"**{meeting['title']}**\nСобрание отменено.",
+                "color": 0xED4245
+            }
+            send_discord_channel_message(meeting['notify_channel'], embed)
+        
+        conn.close()
+        socketio.emit('meeting_updated', {'meeting_id': mid})
+        return jsonify({'ok': True})
+        
+    except Exception as e:
+        conn.close()
+        print(f"Error cancelling meeting: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/auth/discord')
+def auth_discord():
+    if not DISCORD_CLIENT_ID:
+        flash('Discord OAuth не настроен', 'error')
+        return redirect(url_for('login'))
+    
+    params = {
+        'client_id': DISCORD_CLIENT_ID,
+        'redirect_uri': DISCORD_REDIRECT_URI,
+        'response_type': 'code',
+        'scope': 'identify'
+    }
+    url = f"https://discord.com/api/oauth2/authorize?{requests.compat.urlencode(params)}"
+    return redirect(url)
+
+@app.route('/auth/discord/callback')
+def auth_discord_callback():
+    code = request.args.get('code')
+    if not code:
+        flash('Ошибка авторизации', 'error')
+        return redirect(url_for('login'))
+    
+    data = {
+        'client_id': DISCORD_CLIENT_ID,
+        'client_secret': DISCORD_CLIENT_SECRET,
+        'grant_type': 'authorization_code',
+        'code': code,
+        'redirect_uri': DISCORD_REDIRECT_URI
+    }
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    
+    token_resp = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
+    if token_resp.status_code != 200:
+        flash('Ошибка получения токена', 'error')
+        return redirect(url_for('login'))
+    
+    token_data = token_resp.json()
+    access_token = token_data.get('access_token')
+    
+    user_resp = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}'})
+    if user_resp.status_code != 200:
+        flash('Ошибка получения данных пользователя', 'error')
+        return redirect(url_for('login'))
+    
+    discord_user = user_resp.json()
+    discord_id = discord_user['id']
+    discord_username = discord_user['username']
+    discord_avatar = discord_user.get('avatar')
+    
+    conn = get_db()
+    
+    user = conn.execute('SELECT * FROM users WHERE discord_id=?', (discord_id,)).fetchone()
+    
+    if user:
+        if not user['approved']:
+            flash('Аккаунт ожидает подтверждения', 'error')
+            conn.close()
+            return redirect(url_for('login'))
+        
+        session['user_id'] = user['id']
+        session['username'] = user['username']
+        session['role'] = user['role']
+        conn.close()
+        return redirect(url_for('dashboard'))
+    
+    existing = conn.execute('SELECT * FROM users WHERE username=?', (discord_username,)).fetchone()
+    
+    if existing:
+        conn.execute('UPDATE users SET discord_id=?, discord_username=?, discord_avatar=? WHERE id=?',
+                    (discord_id, discord_username, discord_avatar, existing['id']))
+        conn.commit()
+        
+        if not existing['approved']:
+            flash('Аккаунт ожидает подтверждения', 'error')
+            conn.close()
+            return redirect(url_for('login'))
+        
+        session['user_id'] = existing['id']
+        session['username'] = existing['username']
+        session['role'] = existing['role']
+        conn.close()
+        return redirect(url_for('dashboard'))
+    
+    conn.execute('''
+        INSERT INTO users (username, discord_id, discord_username, discord_avatar, role, approved)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (discord_username, discord_id, discord_username, discord_avatar, 'newbie', 0))
+    conn.commit()
+    
+    flash('Регистрация успешна, ожидайте подтверждения', 'success')
+    conn.close()
+    return redirect(url_for('login'))
+
 # Фоновая задача для напоминаний
 async def check_upcoming_meetings():
     """Проверка собраний и отправка напоминаний за 5 минут"""
@@ -1185,7 +1335,7 @@ async def check_upcoming_meetings():
             for meeting in meetings:
                 if DISCORD_TOKEN and meeting['notify_channel']:
                     site_url = request.host_url.rstrip('/') if request else "https://moonlight.app"
-                    meeting_url = f"{site_url}/meetings/{meeting['id']}"
+                    meeting_url = f"{site_url}/meeting/{meeting['id']}"
                     
                     content = None
                     if meeting['role_id']:
@@ -1211,205 +1361,17 @@ async def check_upcoming_meetings():
         
         await asyncio.sleep(30)
 
-async def send_dm_to_role(role_id, content, embed=None):
-    """Отправляет ЛС всем участникам с указанной ролью"""
-    if not DISCORD_TOKEN or not GUILD_ID:
-        return
-    
-    try:
-        # Получаем всех участников сервера
-        url = f"https://discord.com/api/v10/guilds/{GUILD_ID}/members?limit=1000"
-        headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
-        
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            print(f"Ошибка получения участников: {response.status_code}")
-            return
-        
-        members = response.json()
-        
-        # Для каждого участника проверяем наличие роли
-        for member in members:
-            if role_id in member.get('roles', []):
-                user_id = member['user']['id']
-                
-                # Создаем DM канал
-                dm_url = "https://discord.com/api/v10/users/@me/channels"
-                dm_data = {"recipient_id": user_id}
-                dm_response = requests.post(dm_url, headers=headers, json=dm_data)
-                
-                if dm_response.status_code == 200:
-                    dm_channel = dm_response.json()['id']
-                    
-                    # Отправляем сообщение
-                    msg_url = f"https://discord.com/api/v10/channels/{dm_channel}/messages"
-                    msg_data = {"content": content}
-                    if embed:
-                        msg_data["embeds"] = [embed]
-                    
-                    requests.post(msg_url, headers=headers, json=msg_data)
-                    print(f"✅ ЛС отправлено {member['user']['username']}")
-                    
-                    # Небольшая задержка чтобы не забанили за спам
-                    await asyncio.sleep(0.5)
-                    
-    except Exception as e:
-        print(f"Ошибка отправки ЛС: {e}")
-
-async def monitor_voice_channel(meeting_id, voice_channel_id):
-    """Мониторинг голосового канала во время собрания"""
-    if not DISCORD_TOKEN or not voice_channel_id:
-        print(f"❌ Нет токена или ID канала для собрания {meeting_id}")
-        return
-    
-    print(f"🎤 Начинаем мониторинг собрания {meeting_id} в канале {voice_channel_id}")
-    
-    try:
-        url = f"https://discord.com/api/v10/channels/{voice_channel_id}"
-        headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
-        
-        # Проверяем доступ к каналу
-        channel_check = requests.get(url, headers=headers)
-        if channel_check.status_code != 200:
-            print(f"❌ Нет доступа к каналу {voice_channel_id}: {channel_check.status_code}")
-            return
-        
-        tracked_users = {}  # {user_id: {'name': username, 'joined_at': time}}
-        
-        while True:
-            try:
-                # Проверяем статус собрания
-                conn = get_db()
-                meeting = conn.execute('SELECT status FROM meetings WHERE id=?', (meeting_id,)).fetchone()
-                
-                if not meeting or meeting['status'] != 'active':
-                    print(f"⏹ Собрание {meeting_id} завершено, останавливаем мониторинг")
-                    conn.close()
-                    break
-                
-                # Получаем список участников в голосовом канале
-                response = requests.get(f"{url}/members", headers=headers)
-                
-                if response.status_code == 200:
-                    members = response.json()
-                    current_users = {}
-                    
-                    for m in members:
-                        user_id = m['user']['id']
-                        username = m['user']['username']
-                        current_users[user_id] = username
-                    
-                    # Проверяем кто зашел
-                    for uid, username in current_users.items():
-                        if uid not in tracked_users:
-                            joined_at = datetime.now()
-                            tracked_users[uid] = {'name': username, 'joined_at': joined_at}
-                            
-                            # Логируем заход
-                            try:
-                                conn.execute('''
-                                    INSERT INTO voice_activity 
-                                    (meeting_id, user_id, discord_username, action, timestamp) 
-                                    VALUES (?, ?, ?, ?, ?)
-                                ''', (meeting_id, uid, username, 'join', joined_at.strftime('%Y-%m-%d %H:%M:%S')))
-                                conn.commit()
-                                print(f"✅ {username} зашел в голосовой канал")
-                                
-                                # Проверяем, есть ли пользователь в базе
-                                user_in_db = conn.execute('SELECT * FROM users WHERE discord_id=?', (uid,)).fetchone()
-                                
-                                if not user_in_db:
-                                    # Нет в базе - отправляем ЛС с требованием регистрации
-                                    dm_url = "https://discord.com/api/v10/users/@me/channels"
-                                    dm_data = {"recipient_id": uid}
-                                    dm_response = requests.post(dm_url, headers=headers, json=dm_data)
-                                    
-                                    if dm_response.status_code == 200:
-                                        dm_channel = dm_response.json()['id']
-                                        site_url = request.host_url.rstrip('/') if request else "https://moonlight.app"
-                                        register_url = f"{site_url}/login"
-                                        
-                                        msg_data = {
-                                            "content": f"⚠ **Внимание!**\nВы зашли в голосовой канал собрания, но не зарегистрированы на сайте.\n🔗 **Ссылка для регистрации:** {register_url}\n\nПосле регистрации подтвердите участие в собрании!"
-                                        }
-                                        requests.post(f"https://discord.com/api/v10/channels/{dm_channel}/messages", 
-                                                    headers=headers, json=msg_data)
-                                
-                                else:
-                                    # Проверяем ответ на собрание
-                                    response_check = conn.execute('''
-                                        SELECT * FROM meeting_responses 
-                                        WHERE meeting_id=? AND user_id=?
-                                    ''', (meeting_id, user_in_db['id'])).fetchone()
-                                    
-                                    if not response_check:
-                                        # Есть в базе но не отметился
-                                        dm_url = "https://discord.com/api/v10/users/@me/channels"
-                                        dm_data = {"recipient_id": uid}
-                                        dm_response = requests.post(dm_url, headers=headers, json=dm_data)
-                                        
-                                        if dm_response.status_code == 200:
-                                            dm_channel = dm_response.json()['id']
-                                            site_url = request.host_url.rstrip('/') if request else "https://moonlight.app"
-                                            meeting_url = f"{site_url}/meeting/{meeting_id}"
-                                            
-                                            msg_data = {
-                                                "content": f"⚠ **Внимание!**\nВы зашли в голосовой канал собрания **{meeting['title']}**, но не подтвердили участие на сайте.\n🔗 **Ссылка для подтверждения:** {meeting_url}"
-                                            }
-                                            requests.post(f"https://discord.com/api/v10/channels/{dm_channel}/messages", 
-                                                        headers=headers, json=msg_data)
-                                    
-                            except Exception as e:
-                                print(f"Ошибка логирования захода: {e}")
-                    
-                    # Проверяем кто вышел
-                    to_remove = []
-                    for uid, data in tracked_users.items():
-                        if uid not in current_users:
-                            to_remove.append(uid)
-                            leave_time = datetime.now()
-                            
-                            try:
-                                conn.execute('''
-                                    INSERT INTO voice_activity 
-                                    (meeting_id, user_id, discord_username, action, timestamp) 
-                                    VALUES (?, ?, ?, ?, ?)
-                                ''', (meeting_id, uid, data['name'], 'leave', leave_time.strftime('%Y-%m-%d %H:%M:%S')))
-                                conn.commit()
-                                print(f"👋 {data['name']} вышел из голосового канала")
-                            except Exception as e:
-                                print(f"Ошибка логирования выхода: {e}")
-                    
-                    for uid in to_remove:
-                        del tracked_users[uid]
-                
-                conn.close()
-                
-            except Exception as e:
-                print(f"Ошибка в цикле мониторинга: {e}")
-                try:
-                    conn.close()
-                except:
-                    pass
-            
-            await asyncio.sleep(5)  # Проверяем каждые 5 секунд
-            
-    except Exception as e:
-        print(f"❌ Фатальная ошибка мониторинга: {e}")
-        
 if __name__ == "__main__":
-    # Запускаем фоновую задачу
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.create_task(check_upcoming_meetings())
     
-    # Устанавливаем статус бота (онлайн)
     if DISCORD_TOKEN:
         try:
             requests.patch(
                 "https://discord.com/api/v10/users/@me/settings",
                 headers={"Authorization": f"Bot {DISCORD_TOKEN}"},
-                json={"status": "streaming", "custom_status": {"text": "Тех. администратор: @codev0rtex"}}
+                json={"status": "online", "custom_status": {"text": "MoonLight Management"}}
             )
             print("✅ Бот в сети и готов к работе")
         except:
