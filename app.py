@@ -114,14 +114,13 @@ def init_db():
         )
     ''')
 
-# В init_db() после других таблиц
     conn.execute('''
         CREATE TABLE IF NOT EXISTS voice_activity (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             meeting_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
+            user_id TEXT NOT NULL,
             discord_username TEXT NOT NULL,
-            action TEXT NOT NULL,  -- 'join' or 'leave'
+            action TEXT NOT NULL,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (meeting_id) REFERENCES meetings (id)
         )
@@ -919,23 +918,30 @@ def create_dm_channel(user_id):
 @role_required('admin', 'owner')
 def start_meeting(mid):
     conn = get_db()
-    meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
-    
-    if not meeting:
+    try:
+        meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
+        
+        if not meeting:
+            conn.close()
+            return jsonify({'ok': False, 'error': 'Собрание не найдено'})
+        
+        # Обновляем статус
+        conn.execute('UPDATE meetings SET status="active" WHERE id=?', (mid,))
+        conn.commit()
+        
+        # Запускаем мониторинг если указан голосовой канал
+        if meeting['voice_channel_id'] and DISCORD_TOKEN:
+            # Запускаем в фоне, не ждем результат
+            asyncio.create_task(monitor_voice_channel(mid, meeting['voice_channel_id']))
+        
         conn.close()
-        return jsonify({'ok': False, 'error': 'Собрание не найдено'})
-    
-    conn.execute('UPDATE meetings SET status="active" WHERE id=?', (mid,))
-    conn.commit()
-    
-    # Запускаем мониторинг если указан голосовой канал
-    if meeting['voice_channel_id'] and DISCORD_TOKEN:
-        asyncio.create_task(monitor_voice_channel(mid, meeting['voice_channel_id']))
-    
-    conn.close()
-    
-    socketio.emit('meeting_updated', {'meeting_id': mid})
-    return jsonify({'ok': True})
+        socketio.emit('meeting_updated', {'meeting_id': mid})
+        return jsonify({'ok': True})
+        
+    except Exception as e:
+        conn.close()
+        print(f"Error starting meeting: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 @app.route('/meetings/<int:mid>/voice-stats')
 @login_required
@@ -1096,58 +1102,68 @@ async def monitor_voice_channel(meeting_id, voice_channel_id):
     if not DISCORD_TOKEN or not voice_channel_id:
         return
     
-    url = f"https://discord.com/api/v10/channels/{voice_channel_id}"
-    headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
-    
-    tracked_users = {}  # {user_id: join_time}
-    
-    while True:
-        try:
-            # Проверяем статус собрания
-            conn = get_db()
-            meeting = conn.execute('SELECT status FROM meetings WHERE id=?', (meeting_id,)).fetchone()
-            
-            if not meeting or meeting['status'] != 'active':
-                conn.close()
-                break
-            
-            # Получаем список участников в голосовом канале
-            response = requests.get(f"{url}/members", headers=headers)
-            
-            if response.status_code == 200:
-                members = response.json()
-                current_users = {m['user']['id']: m['user']['username'] for m in members}
-                
-                # Проверяем кто зашел
-                for uid, username in current_users.items():
-                    if uid not in tracked_users:
-                        tracked_users[uid] = datetime.now()
-                        conn.execute('''
-                            INSERT INTO voice_activity (meeting_id, user_id, discord_username, action)
-                            VALUES (?, ?, ?, 'join')
-                        ''', (meeting_id, uid, username))
-                        conn.commit()
-                
-                # Проверяем кто вышел
-                to_remove = []
-                for uid, join_time in tracked_users.items():
-                    if uid not in current_users:
-                        to_remove.append(uid)
-                        conn.execute('''
-                            INSERT INTO voice_activity (meeting_id, user_id, discord_username, action)
-                            VALUES (?, ?, ?, 'leave')
-                        ''', (meeting_id, uid, username))
-                        conn.commit()
-                
-                for uid in to_remove:
-                    del tracked_users[uid]
-            
-            conn.close()
-            
-        except Exception as e:
-            print(f"Ошибка мониторинга голосового канала: {e}")
+    try:
+        url = f"https://discord.com/api/v10/channels/{voice_channel_id}"
+        headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
         
-        await asyncio.sleep(10)  # Проверяем каждые 10 секунд
+        tracked_users = {}  # {user_id: join_time}
+        
+        while True:
+            try:
+                # Проверяем статус собрания
+                conn = get_db()
+                meeting = conn.execute('SELECT status FROM meetings WHERE id=?', (meeting_id,)).fetchone()
+                
+                if not meeting or meeting['status'] != 'active':
+                    conn.close()
+                    break
+                
+                # Получаем список участников в голосовом канале
+                response = requests.get(f"{url}/members", headers=headers)
+                
+                if response.status_code == 200:
+                    members = response.json()
+                    current_users = {m['user']['id']: m['user']['username'] for m in members}
+                    
+                    # Проверяем кто зашел
+                    for uid, username in current_users.items():
+                        if uid not in tracked_users:
+                            tracked_users[uid] = datetime.now()
+                            try:
+                                conn.execute('''
+                                    INSERT INTO voice_activity (meeting_id, user_id, discord_username, action)
+                                    VALUES (?, ?, ?, 'join')
+                                ''', (meeting_id, uid, username))
+                                conn.commit()
+                            except Exception as e:
+                                print(f"Error logging join: {e}")
+                    
+                    # Проверяем кто вышел
+                    to_remove = []
+                    for uid, join_time in tracked_users.items():
+                        if uid not in current_users:
+                            to_remove.append(uid)
+                            try:
+                                conn.execute('''
+                                    INSERT INTO voice_activity (meeting_id, user_id, discord_username, action)
+                                    VALUES (?, ?, ?, 'leave')
+                                ''', (meeting_id, uid, username))
+                                conn.commit()
+                            except Exception as e:
+                                print(f"Error logging leave: {e}")
+                    
+                    for uid in to_remove:
+                        del tracked_users[uid]
+                
+                conn.close()
+                
+            except Exception as e:
+                print(f"Ошибка в цикле мониторинга: {e}")
+            
+            await asyncio.sleep(10)  # Проверяем каждые 10 секунд
+            
+    except Exception as e:
+        print(f"Ошибка мониторинга голосового канала: {e}")
 
 if __name__ == "__main__":
     # Запускаем фоновую задачу
