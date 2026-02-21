@@ -520,7 +520,7 @@ def create_meeting():
         if notify_channel and DISCORD_BOT_TOKEN:
             dt = datetime.fromisoformat(scheduled_at)
             site_url = request.host_url.rstrip('/')
-            meeting_url = f"{site_url}/meeting/{meeting_id}"
+            meeting_url = f"{site_url}/meetings/{meeting_id}"
             
             embed = {
                 "title": f"📅 Новое собрание: {title}",
