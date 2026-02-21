@@ -404,8 +404,24 @@
 
 </div>
 {% endif %}
+    {% if user.role in ('admin', 'owner') and meeting.status == 'finished' %}
+<button class="btn btn-ghost btn-sm" onclick="loadVoiceStats({{ meeting.id }})">
+    🎤 Статистика голосового канала
+</button>
 
+<!-- Модальное окно со статистикой -->
+<div class="modal-overlay" id="voice-stats-modal">
+    <div class="modal" style="max-width:600px">
+        <div class="modal-title">📊 Статистика присутствия в голосовом канале</div>
+        <div id="voice-stats-content" style="max-height:400px;overflow-y:auto">
+            <!-- Тут будет таблица -->
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeModal('voice-stats-modal')">Закрыть</button>
+        </div>
+    </div>
 </div>
+
 
 {% endblock %}
 
@@ -565,6 +581,28 @@ async function loadStats() {
     document.getElementById('s-no-resp').textContent = d.no_response;
     document.getElementById('s-absent-bad').textContent = d.absent_rejected;
 }
+
+async function loadVoiceStats(mid) {
+        const res = await fetch(`/meetings/${mid}/voice-stats`);
+        const data = await res.json();
+    
+        let html = '<table><thead><tr><th>Пользователь</th><th>Заходов</th><th>Выходов</th><th>Первый вход</th><th>Последний выход</th></tr></thead><tbody>';
+    
+        for (const [user, stat] of Object.entries(data.stats)) {
+            html += `<tr>
+                <td>${user}</td>
+                <td>${stat.joins}</td>
+                <td>${stat.leaves}</td>
+                <td>${stat.first_seen}</td>
+                <td>${stat.last_seen}</td>
+            </tr>`;
+        }
+    
+        html += '</tbody></table>';
+    
+        document.getElementById('voice-stats-content').innerHTML = html;
+        document.getElementById('voice-stats-modal').classList.add('open');
+    }
 
 // Auto-load stats for admin/owner
 {% if user.role in ('admin', 'owner') %}
