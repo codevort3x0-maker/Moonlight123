@@ -251,7 +251,11 @@ def dashboard():
     
     conn.close()
     
-    return render_template('dashboard.html', user=user, upcoming=upcoming, my_responses=my_responses)
+    stats = {
+    'users_total': conn.execute('SELECT COUNT(*) as cnt FROM users WHERE approved=1').fetchone()['cnt'],
+    'meetings_total': conn.execute('SELECT COUNT(*) as cnt FROM meetings').fetchone()['cnt']
+}
+return render_template('dashboard.html', user=user, upcoming=upcoming, my_responses=my_responses, stats=stats)
 
 @app.route('/meetings')
 @login_required
