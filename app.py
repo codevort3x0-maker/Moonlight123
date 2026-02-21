@@ -93,9 +93,9 @@ def init_db():
     ''')
     
     # Создаем админа по умолчанию
-    admin = conn.execute('SELECT * FROM users WHERE username="CodeV0rtex"').fetchone()
+    admin = conn.execute('SELECT * FROM users WHERE username="admin"').fetchone()
     if not admin:
-        hashed = hashlib.sha256('21emanoN74859474()'.encode()).hexdigest()
+        hashed = hashlib.sha256('admin123'.encode()).hexdigest()
         conn.execute('INSERT INTO users (username, password, role, approved) VALUES (?, ?, ?, ?)',
                     ('admin', hashed, 'admin', 1))
     
