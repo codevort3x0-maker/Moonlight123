@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% block title %}MoonLight — Пользователи{% endblock %}
+{% block page_title %}Пользователи{% endblock %}
+
+{% block topbar_actions %}
+{% endblock %}
+
+{% block content %}
+
+{% if pending %}
+<div class="card" style="margin-bottom:24px;border-color:rgba(240,160,64,.3)">
+    <div class="card-header">
+        <div class="card-title" style="color:var(--orange)">⏳ Ожидают подтверждения ({{ pending|length }})</div>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Пользователь</th>
+                    <th>Discord</th>
+                    <th>Дата регистрации</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for u in pending %}
+            <tr id="pending-row-{{ u.id }}">
+                <td>
+                    <div style="display:flex;align-items:center;gap:10px">
+                        <div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0">{{ u.username[0].upper() }}</div>
+                        <span style="font-weight:600;color:var(--text)">{{ u.username }}</span>
+                    </div>
+                </td>
+                <td style="color:var(--text2)">{{ u.discord_username or '—' }}</td>
+                <td style="color:var(--text3);font-size:12px">{{ u.created_at[:16] }}</td>
+                <td>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn btn-success btn-sm" onclick="approveUser({{ u.id }})">✓ Одобрить</button>
+                        <button class="btn btn-danger btn-sm" onclick="rejectUser({{ u.id }})">✗ Отклонить</button>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<div class="card">
+    <div class="card-header">
+        <div class="card-title">👥 Все пользователи</div>
+        <div style="display:flex;gap:10px;align-items:center">
+            <input id="search" class="form-input" placeholder="🔍 Поиск..." style="width:220px;padding:7px 12px;font-size:13px" oninput="filterUsers(this.value)">
+        </div>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Пользователь</th>
+                    <th>Discord</th>
+                    <th>Роль</th>
+                    <th>Статус</th>
+                    <th>Дата</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody id="users-tbody">
+            {% for u in all_users %}
+            <tr class="user-row" data-name="{{ u.username|lower }}">
+                <td>
+                    <div style="display:flex;align-items:center;gap:10px">
+                        {% if u.discord_avatar %}
+                        <img src="https://cdn.discordapp.com/avatars/{{ u.discord_id }}/{{ u.discord_avatar }}.png?size=32" style="width:32px;height:32px;border-radius:50%">
+                        {% else %}
+                        <div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0">{{ u.username[0].upper() }}</div>
+                        {% endif %}
+                        <span style="font-weight:600;color:var(--text)">{{ u.username }}</span>
+                    </div>
+                </td>
+                <td style="color:var(--text2)">
+                    {% if u.discord_username %}
+                    <span style="color:#5865F2;font-weight:600">@{{ u.discord_username }}</span>
+                    {% else %}—{% endif %}
+                </td>
+                <td>
+                    <span class="badge badge-{{ u.role }}">{{ u.role }}</span>
+                </td>
+                <td>
+                    {% if u.approved %}
+                    <span style="color:var(--green);font-size:12px;font-weight:600">● Активен</span>
+                    {% else %}
+                    <span style="color:var(--orange);font-size:12px;font-weight:600">● Ожидает</span>
+                    {% endif %}
+                </td>
+                <td style="color:var(--text3);font-size:12px">{{ u.created_at[:10] }}</td>
+                <td>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap">
+                        {% if user.role == 'admin' and u.id != user.id %}
+                        <select class="form-input" style="padding:4px 8px;font-size:12px;width:auto" onchange="changeRole({{ u.id }}, this.value)" title="Изменить роль">
+                            <option value="newbie" {% if u.role=='newbie' %}selected{% endif %}>Newbie</option>
+                            <option value="owner" {% if u.role=='owner' %}selected{% endif %}>Owner</option>
+                            <option value="admin" {% if u.role=='admin' %}selected{% endif %}>Admin</option>
+                        </select>
+                        <button class="btn btn-ghost btn-sm" onclick="resetPassword({{ u.id }}, '{{ u.username }}')" title="Сбросить пароль">🔑</button>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" style="text-align:center;color:var(--text3);padding:40px">Нет пользователей</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Reset Password Modal -->
+<div class="modal-overlay" id="reset-modal">
+    <div class="modal">
+        <div class="modal-title">🔑 Новый пароль</div>
+        <div id="reset-result" style="padding:16px;background:var(--bg3);border-radius:8px;border:1px solid var(--border);font-family:monospace;font-size:16px;letter-spacing:2px;text-align:center;color:var(--green)"></div>
+        <div style="color:var(--text2);font-size:13px;margin-top:12px;text-align:center">Этот пароль будет отправлен пользователю в Discord (если привязан)</div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeModal('reset-modal')">Закрыть</button>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function approveUser(uid) {
+    const res = await apiFetch(`/users/${uid}/approve`, {});
+    if (res.ok) {
+        document.getElementById('pending-row-' + uid)?.remove();
+        toast('Пользователь одобрен!', 'success');
+    }
+}
+
+async function rejectUser(uid) {
+    if (!confirm('Удалить заявку пользователя?')) return;
+    const res = await apiFetch(`/users/${uid}/reject`, {});
+    if (res.ok) {
+        document.getElementById('pending-row-' + uid)?.remove();
+        toast('Заявка отклонена.', 'error');
+    }
+}
+
+async function resetPassword(uid, name) {
+    if (!confirm(`Сбросить пароль для ${name}?`)) return;
+    const res = await apiFetch(`/users/${uid}/reset-password`, {});
+    if (res.ok) {
+        document.getElementById('reset-result').textContent = res.new_password;
+        document.getElementById('reset-modal').classList.add('open');
+    }
+}
+
+async function changeRole(uid, role) {
+    const res = await apiFetch(`/users/${uid}/change-role`, {role});
+    if (res.ok) toast(`Роль изменена на ${role}`, 'success');
+    else toast('Ошибка изменения роли', 'error');
+}
+
+function closeModal(id) {
+    document.getElementById(id).classList.remove('open');
+}
+
+function filterUsers(val) {
+    val = val.toLowerCase();
+    document.querySelectorAll('.user-row').forEach(row => {
+        row.style.display = row.dataset.name.includes(val) ? '' : 'none';
+    });
+}
+
+document.getElementById('reset-modal').addEventListener('click', function(e) {
+    if (e.target === this) this.classList.remove('open');
+});
+</script>
+{% endblock %}

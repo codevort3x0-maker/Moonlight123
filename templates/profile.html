@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}MoonLight — Профиль{% endblock %}
+{% block page_title %}Профиль{% endblock %}
+
+{% block content %}
+
+<div style="max-width:600px;display:flex;flex-direction:column;gap:20px">
+
+    <!-- User Card -->
+    <div class="card">
+        <div style="display:flex;align-items:center;gap:20px">
+            {% if user.discord_avatar and user.discord_id %}
+            <img src="https://cdn.discordapp.com/avatars/{{ user.discord_id }}/{{ user.discord_avatar }}.png?size=80"
+                 style="width:72px;height:72px;border-radius:50%;border:2px solid var(--border2)">
+            {% else %}
+            <div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-family:'Rajdhani',sans-serif;font-size:28px;font-weight:700;color:#fff;flex-shrink:0">
+                {{ user.username[0].upper() }}
+            </div>
+            {% endif %}
+            <div>
+                <div style="font-family:'Rajdhani',sans-serif;font-size:24px;font-weight:700;color:var(--text)">{{ user.username }}</div>
+                <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+                    <span class="badge badge-{{ user.role }}">{{ user.role }}</span>
+                    {% if user.approved %}
+                    <span style="color:var(--green);font-size:12px;font-weight:600">● Активен</span>
+                    {% endif %}
+                </div>
+                <div style="color:var(--text3);font-size:12px;margin-top:6px">Зарегистрирован: {{ user.created_at[:10] }}</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Discord Link -->
+    <div class="card">
+        <div class="card-header" style="margin-bottom:16px">
+            <div class="card-title">
+                <svg width="18" height="18" viewBox="0 0 127.14 96.36" fill="#5865F2" style="vertical-align:middle;margin-right:6px">
+                    <path d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z"/>
+                </svg>
+                Discord аккаунт
+            </div>
+        </div>
+
+        {% if user.discord_id %}
+        <!-- Already linked -->
+        <div style="display:flex;align-items:center;gap:14px;padding:16px;background:rgba(88,101,242,.08);border:1px solid rgba(88,101,242,.25);border-radius:10px">
+            {% if user.discord_avatar %}
+            <img src="https://cdn.discordapp.com/avatars/{{ user.discord_id }}/{{ user.discord_avatar }}.png?size=48"
+                 style="width:44px;height:44px;border-radius:50%">
+            {% else %}
+            <div style="width:44px;height:44px;border-radius:50%;background:#5865F2;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700">{{ (user.discord_username or 'D')[0].upper() }}</div>
+            {% endif %}
+            <div>
+                <div style="font-weight:700;color:var(--text);font-size:15px">@{{ user.discord_username }}</div>
+                <div style="font-size:11px;color:var(--text3);margin-top:2px">ID: {{ user.discord_id }}</div>
+            </div>
+            <div style="margin-left:auto">
+                <span style="color:var(--green);font-size:13px;font-weight:600">✓ Привязан</span>
+            </div>
+        </div>
+        <div style="margin-top:12px">
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('unlink-modal').classList.add('open')">Отвязать Discord</button>
+        </div>
+
+        {% else %}
+        <!-- Not linked -->
+        <div style="padding:20px;background:var(--bg3);border:1px dashed var(--border2);border-radius:10px;text-align:center;margin-bottom:16px">
+            <div style="font-size:32px;margin-bottom:8px">🔗</div>
+            <div style="color:var(--text2);font-size:14px;margin-bottom:4px">Discord не привязан</div>
+            <div style="color:var(--text3);font-size:12px">Привяжи аккаунт чтобы получать уведомления о собраниях и решениях</div>
+        </div>
+        <a href="/auth/discord" class="btn btn-discord" style="display:flex;width:100%;justify-content:center;padding:12px">
+            <svg width="18" height="18" viewBox="0 0 127.14 96.36" fill="currentColor">
+                <path d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z"/>
+            </svg>
+            Привязать Discord
+        </a>
+        {% endif %}
+    </div>
+
+    <!-- Change Password -->
+    <div class="card">
+        <div class="card-header" style="margin-bottom:16px">
+            <div class="card-title">🔑 Сменить пароль</div>
+        </div>
+        <form method="POST" action="/profile/change-password">
+            <div class="form-group">
+                <label class="form-label">Текущий пароль</label>
+                <input type="password" name="current_password" class="form-input" placeholder="••••••••" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Новый пароль</label>
+                <input type="password" name="new_password" id="new-pass" class="form-input" placeholder="••••••••" required oninput="checkStrength(this.value)">
+                <div style="height:3px;background:var(--border);border-radius:2px;margin-top:6px;overflow:hidden">
+                    <div id="strength-fill" style="height:100%;border-radius:2px;transition:width .3s,background .3s;width:0"></div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Подтвердить новый пароль</label>
+                <input type="password" name="confirm_password" class="form-input" placeholder="••••••••" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Сменить пароль</button>
+        </form>
+    </div>
+
+</div>
+
+<!-- Unlink Modal -->
+<div class="modal-overlay" id="unlink-modal">
+    <div class="modal">
+        <div class="modal-title">Отвязать Discord?</div>
+        <div style="color:var(--text2);font-size:14px;line-height:1.6">
+            Ты больше не будешь получать уведомления о собраниях и решениях в Discord.
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="document.getElementById('unlink-modal').classList.remove('open')">Отмена</button>
+            <form method="POST" action="/profile/unlink-discord" style="margin:0">
+                <button type="submit" class="btn btn-danger">Отвязать</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function checkStrength(val) {
+    const fill = document.getElementById('strength-fill');
+    let score = 0;
+    if (val.length >= 6) score++;
+    if (val.length >= 10) score++;
+    if (/[A-Z]/.test(val)) score++;
+    if (/[0-9]/.test(val)) score++;
+    if (/[^A-Za-z0-9]/.test(val)) score++;
+    const colors = ['', '#f25f5c', '#f0a040', '#f0c040', '#3ecf8e', '#4f8ef7'];
+    const widths = [0, 20, 40, 60, 80, 100];
+    fill.style.width = widths[score] + '%';
+    fill.style.background = colors[score] || '';
+}
+
+document.getElementById('unlink-modal').addEventListener('click', function(e) {
+    if (e.target === this) this.classList.remove('open');
+});
+</script>
+{% endblock %}

@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}MoonLight — Панель{% endblock %}
+{% block page_title %}Панель управления{% endblock %}
+
+{% block topbar_actions %}
+{% if user.role in ('admin', 'owner') %}
+<a href="/meetings/create" class="btn btn-primary btn-sm">＋ Собрание</a>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+
+{% if user.role in ('admin', 'owner') %}
+<!-- STATS -->
+<div class="stats-grid">
+    <div class="stat-card blue">
+        <div class="stat-value">{{ stats.users_total or 0 }}</div>
+        <div class="stat-label">Пользователей</div>
+        <div class="stat-icon">👥</div>
+    </div>
+    <div class="stat-card gold">
+        <div class="stat-value">{{ stats.pending_users or 0 }}</div>
+        <div class="stat-label">Ожидают одобрения</div>
+        <div class="stat-icon">⏳</div>
+    </div>
+    <div class="stat-card green">
+        <div class="stat-value">{{ stats.meetings_total or 0 }}</div>
+        <div class="stat-label">Собраний</div>
+        <div class="stat-icon">📅</div>
+    </div>
+    <div class="stat-card red">
+        <div class="stat-value">{{ stats.transfers_pending or 0 }}</div>
+        <div class="stat-label">Переводов на рассмотрении</div>
+        <div class="stat-icon">🔄</div>
+    </div>
+</div>
+
+<div class="grid-2">
+    <!-- Recent Meetings -->
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">📅 Последние собрания</div>
+            <a href="/meetings" class="btn btn-ghost btn-sm">Все →</a>
+        </div>
+        {% if recent_meetings %}
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Название</th>
+                        <th>Время</th>
+                        <th>Статус</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for m in recent_meetings %}
+                <tr>
+                    <td><a href="/meetings/{{ m.id }}" style="color:var(--accent);text-decoration:none;font-weight:600">{{ m.title }}</a></td>
+                    <td style="color:var(--text3);font-size:12px">{{ m.scheduled_at[:16].replace('T',' ') }}</td>
+                    <td><span class="badge badge-{{ m.status }}">{{ m.status }}</span></td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Нет собраний</div></div>
+        {% endif %}
+    </div>
+
+    <!-- Recent Transfers -->
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">🔄 Последние переводы</div>
+            <a href="/transfers" class="btn btn-ghost btn-sm">Все →</a>
+        </div>
+        {% if recent_transfers %}
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Организация</th>
+                        <th>Создал</th>
+                        <th>Статус</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for t in recent_transfers %}
+                <tr>
+                    <td style="font-weight:600;color:var(--text)">{{ t.organization }}</td>
+                    <td style="color:var(--text2)">{{ t.creator_name or '—' }}</td>
+                    <td><span class="badge badge-{{ t.status }}">{{ t.status }}</span></td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Нет переводов</div></div>
+        {% endif %}
+    </div>
+</div>
+
+{% else %}
+<!-- NEWBIE DASHBOARD -->
+<div class="card" style="max-width:600px;margin:0 auto;text-align:center;padding:48px">
+    <div style="font-size:56px;margin-bottom:16px">☽</div>
+    <div style="font-family:'Rajdhani',sans-serif;font-size:26px;font-weight:700;margin-bottom:8px">
+        Добро пожаловать, {{ user.username }}!
+    </div>
+    <div style="color:var(--text2);font-size:14px;margin-bottom:32px;line-height:1.6">
+        Вы вошли в систему MoonLight.<br>
+        Здесь вы можете отслеживать собрания и подтверждать своё участие.
+    </div>
+    <a href="/meetings" class="btn btn-primary" style="font-size:15px;padding:12px 28px">
+        📅 Перейти к собраниям
+    </a>
+</div>
+
+{% if recent_meetings %}
+<div class="card" style="margin-top:20px">
+    <div class="card-header">
+        <div class="card-title">📅 Предстоящие собрания</div>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr><th>Название</th><th>Дата и время</th><th></th></tr>
+            </thead>
+            <tbody>
+            {% for m in recent_meetings %}
+            <tr>
+                <td style="font-weight:600;color:var(--text)">{{ m.title }}</td>
+                <td style="color:var(--text2);font-size:13px">{{ m.scheduled_at[:16].replace('T',' ') }}</td>
+                <td><a href="/meetings/{{ m.id }}" class="btn btn-primary btn-sm">Открыть</a></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endif %}
+
+{% endblock %}

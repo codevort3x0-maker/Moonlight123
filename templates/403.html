@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}403 — Нет доступа{% endblock %}
+{% block page_title %}Нет доступа{% endblock %}
+{% block content %}
+<div class="empty" style="padding:100px">
+    <div style="font-size:72px;margin-bottom:16px">🔒</div>
+    <div style="font-family:'Rajdhani',sans-serif;font-size:32px;font-weight:700;color:var(--red);margin-bottom:8px">403</div>
+    <div style="font-size:16px;color:var(--text2);margin-bottom:24px">У вас нет прав для просмотра этой страницы</div>
+    <a href="/dashboard" class="btn btn-primary">← На главную</a>
+</div>
+{% endblock %}

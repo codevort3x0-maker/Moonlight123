@@ -1,0 +1,466 @@
+{% extends "base.html" %}
+{% block title %}MoonLight — {{ meeting.title }}{% endblock %}
+{% block page_title %}{{ meeting.title }}{% endblock %}
+
+{% block topbar_actions %}
+<a href="/meetings" class="btn btn-ghost btn-sm">← Назад</a>
+{% if user.role in ('admin', 'owner') %}
+<a href="#" class="btn btn-ghost btn-sm" onclick="loadStats()">📊 Обновить статистику</a>
+{% endif %}
+{% endblock %}
+
+{% block extra_styles %}
+<style>
+.embed {
+    background: var(--card2);
+    border: 1px solid var(--border2);
+    border-left: 4px solid var(--accent);
+    border-radius: 8px;
+    padding: 20px 24px;
+    max-width: 480px;
+}
+
+.embed-title {
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 10px;
+}
+
+.embed-field {
+    margin-top: 12px;
+}
+
+.embed-field-name {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text2);
+    margin-bottom: 4px;
+}
+
+.embed-field-value {
+    font-size: 14px;
+    color: var(--text);
+}
+
+.discord-input-wrap {
+    display: flex;
+    align-items: center;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    transition: border-color .2s;
+}
+
+.discord-input-wrap:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(79,142,247,.1);
+}
+
+.discord-at {
+    padding: 11px 10px 11px 14px;
+    color: var(--text3);
+    font-weight: 700;
+    font-size: 16px;
+    user-select: none;
+}
+
+.discord-input {
+    flex: 1;
+    background: none;
+    border: none;
+    padding: 11px 14px 11px 0;
+    font-size: 14px;
+    color: var(--text);
+    font-family: 'Nunito', sans-serif;
+    outline: none;
+}
+
+.verify-indicator {
+    padding: 0 12px;
+    font-size: 14px;
+}
+
+.response-btns {
+    display: flex;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+.response-btn {
+    flex: 1;
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    border: 2px solid transparent;
+    font-family: 'Nunito', sans-serif;
+    transition: all .2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.response-btn:disabled {
+    opacity: .4;
+    cursor: not-allowed;
+    transform: none !important;
+}
+
+.btn-attend {
+    background: rgba(62,207,142,.15);
+    color: var(--green);
+    border-color: rgba(62,207,142,.3);
+}
+
+.btn-attend:not(:disabled):hover {
+    background: var(--green);
+    color: #fff;
+    transform: translateY(-2px);
+}
+
+.btn-absent {
+    background: rgba(242,95,92,.15);
+    color: var(--red);
+    border-color: rgba(242,95,92,.3);
+}
+
+.btn-absent:not(:disabled):hover {
+    background: var(--red);
+    color: #fff;
+    transform: translateY(-2px);
+}
+
+.absence-area {
+    display: none;
+    margin-top: 14px;
+}
+
+.responded-banner {
+    padding: 16px 20px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.responded-attending { background: rgba(62,207,142,.12); border: 1px solid rgba(62,207,142,.3); color: var(--green); }
+.responded-absent { background: rgba(240,160,64,.12); border: 1px solid rgba(240,160,64,.3); color: var(--orange); }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<div class="grid-2" style="align-items:start">
+
+<!-- LEFT: Meeting Embed + Response -->
+<div>
+    <!-- Meeting embed -->
+    <div class="embed" style="margin-bottom:20px">
+        <div class="embed-title">📅 {{ meeting.title }}</div>
+        {% if meeting.description %}
+        <div style="font-size:14px;color:var(--text2);line-height:1.5;margin-bottom:4px">{{ meeting.description }}</div>
+        {% endif %}
+        <div style="display:flex;gap:20px;flex-wrap:wrap">
+            <div class="embed-field">
+                <div class="embed-field-name">🕐 Дата и время</div>
+                <div class="embed-field-value">{{ meeting.scheduled_at[:16].replace('T',' ') }}</div>
+            </div>
+            <div class="embed-field">
+                <div class="embed-field-name">👤 Создал</div>
+                <div class="embed-field-value">{{ meeting.creator or '—' }}</div>
+            </div>
+            <div class="embed-field">
+                <div class="embed-field-name">📌 Статус</div>
+                <div class="embed-field-value"><span class="badge badge-{{ meeting.status }}">{{ meeting.status }}</span></div>
+            </div>
+        </div>
+    </div>
+
+    {% if my_response %}
+    <!-- Already responded -->
+    <div class="responded-banner responded-{{ my_response.response }}">
+        {% if my_response.response == 'attending' %}
+        ✓ Вы отметились как присутствующий
+        {% else %}
+        ⏳ Вы отправили причину отсутствия
+        {% if my_response.reason_status == 'pending' %}— ожидает рассмотрения{% endif %}
+        {% if my_response.reason_status == 'approved' %}<span style="color:var(--green)"> — одобрено ✓</span>{% endif %}
+        {% if my_response.reason_status == 'rejected' %}<span style="color:var(--red)"> — отклонено ✗</span>{% endif %}
+        {% endif %}
+    </div>
+
+    {% if my_response.response == 'absent' and my_response.absence_reason %}
+    <div class="card" style="padding:16px">
+        <div style="font-size:12px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:1px;font-weight:600">Ваша причина</div>
+        <div style="font-size:14px;color:var(--text2)">{{ my_response.absence_reason }}</div>
+    </div>
+    {% endif %}
+
+    {% elif meeting.status == 'upcoming' %}
+    <!-- Response form -->
+    <div class="card">
+        <div style="font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;margin-bottom:16px;letter-spacing:.5px">
+            Подтвердите участие
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Ваш Discord</label>
+            <div class="discord-input-wrap">
+                <span class="discord-at">@</span>
+                <input type="text" id="discord-input" class="discord-input" placeholder="username" oninput="onDiscordInput(this.value)">
+                <div class="verify-indicator" id="verify-indicator"></div>
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-top:6px">Введите свой Discord username без @</div>
+        </div>
+
+        <div class="response-btns">
+            <button class="response-btn btn-attend" id="btn-attend" disabled onclick="respond('attending')">
+                ✓ Приду
+            </button>
+            <button class="response-btn btn-absent" id="btn-absent" disabled onclick="showAbsenceForm()">
+                ✗ Не приду
+            </button>
+        </div>
+
+        <div class="absence-area" id="absence-area">
+            <div class="form-group" style="margin-bottom:12px">
+                <label class="form-label">Причина отсутствия</label>
+                <textarea id="absence-reason" class="form-input" placeholder="Опишите причину..." rows="3"></textarea>
+            </div>
+            <div style="display:flex;gap:10px">
+                <button class="btn btn-danger" onclick="respond('absent')">Отправить причину</button>
+                <button class="btn btn-ghost" onclick="hideAbsenceForm()">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    {% else %}
+    <div class="card" style="padding:20px;text-align:center;color:var(--text3)">
+        Собрание уже прошло или закрыто для ответов.
+    </div>
+    {% endif %}
+</div>
+
+<!-- RIGHT: Attendance (Admin/Owner only) -->
+{% if user.role in ('admin', 'owner') %}
+<div>
+    <!-- Stats -->
+    <div class="card" style="margin-bottom:16px">
+        <div class="card-header" style="margin-bottom:14px">
+            <div class="card-title">📊 Статистика</div>
+        </div>
+        <div id="stats-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div style="background:var(--bg3);border-radius:8px;padding:14px;text-align:center">
+                <div id="s-attending" style="font-family:'Rajdhani',sans-serif;font-size:28px;font-weight:700;color:var(--green)">—</div>
+                <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px">Придут</div>
+            </div>
+            <div style="background:var(--bg3);border-radius:8px;padding:14px;text-align:center">
+                <div id="s-absent-ok" style="font-family:'Rajdhani',sans-serif;font-size:28px;font-weight:700;color:var(--orange)">—</div>
+                <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px">Уважит. причина</div>
+            </div>
+            <div style="background:var(--bg3);border-radius:8px;padding:14px;text-align:center">
+                <div id="s-no-resp" style="font-family:'Rajdhani',sans-serif;font-size:28px;font-weight:700;color:var(--text3)">—</div>
+                <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px">Нет ответа</div>
+            </div>
+            <div style="background:rgba(242,95,92,.08);border:1px solid rgba(242,95,92,.2);border-radius:8px;padding:14px;text-align:center">
+                <div id="s-absent-bad" style="font-family:'Rajdhani',sans-serif;font-size:28px;font-weight:700;color:var(--red)">—</div>
+                <div style="font-size:11px;color:var(--red);text-transform:uppercase;letter-spacing:1px;font-weight:700">Бездари</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Attendees -->
+    <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+            <div class="card-title" style="color:var(--green)">✓ Присутствующие ({{ attendees|length }})</div>
+        </div>
+        {% if attendees %}
+        <div style="display:flex;flex-direction:column;gap:8px">
+        {% for a in attendees %}
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg3);border-radius:8px">
+            <div style="width:28px;height:28px;border-radius:50%;background:var(--green);display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:700;flex-shrink:0">{{ a.username[0].upper() }}</div>
+            <div>
+                <div style="font-size:13px;font-weight:600;color:var(--text)">{{ a.username }}</div>
+                {% if a.discord_username %}
+                <div style="font-size:11px;color:#5865F2">@{{ a.discord_username }}</div>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty" style="padding:20px"><div class="empty-text">Никто не подтвердил</div></div>
+        {% endif %}
+    </div>
+
+    <!-- Absent pending -->
+    {% if absent %}
+    <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+            <div class="card-title" style="color:var(--orange)">⏳ Причины отсутствия</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+        {% for a in absent %}
+        <div style="padding:14px;background:var(--bg3);border-radius:8px;border:1px solid var(--border)">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <div>
+                    <span style="font-weight:600;color:var(--text);font-size:13px">{{ a.username }}</span>
+                    {% if a.discord_username %}<span style="color:#5865F2;font-size:12px;margin-left:6px">@{{ a.discord_username }}</span>{% endif %}
+                </div>
+                <span class="badge badge-{{ a.reason_status }}">{{ a.reason_status }}</span>
+            </div>
+            {% if a.absence_reason %}
+            <div style="font-size:13px;color:var(--text2);line-height:1.5;margin-bottom:10px;padding:10px;background:rgba(0,0,0,.2);border-radius:6px">{{ a.absence_reason }}</div>
+            {% endif %}
+            {% if a.reason_status == 'pending' %}
+            <div style="display:flex;gap:8px">
+                <button class="btn btn-success btn-sm" onclick="reviewAbsence({{ meeting.id }}, {{ a.id }}, 'approved')">✓ Одобрить</button>
+                <button class="btn btn-danger btn-sm" onclick="reviewAbsence({{ meeting.id }}, {{ a.id }}, 'rejected')">✗ Отклонить (Бездарь)</button>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- No response -->
+    {% if no_response %}
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title" style="color:var(--text3)">⚠ Нет ответа ({{ no_response|length }})</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+        {% for u in no_response %}
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg3);border-radius:6px">
+            <div style="width:24px;height:24px;border-radius:50%;background:var(--border2);display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:11px;font-weight:700;flex-shrink:0">{{ u['username'][0].upper() }}</div>
+            <span style="font-size:13px;color:var(--text2)">{{ u['username'] }}</span>
+        </div>
+        {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+</div>
+{% endif %}
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const meetingId = {{ meeting.id }};
+let discordVerified = false;
+let verifyTimeout = null;
+
+function onDiscordInput(val) {
+    clearTimeout(verifyTimeout);
+    const ind = document.getElementById('verify-indicator');
+    const btnA = document.getElementById('btn-attend');
+    const btnB = document.getElementById('btn-absent');
+
+    if (!val.trim()) {
+        ind.textContent = '';
+        discordVerified = false;
+        btnA.disabled = true;
+        btnB.disabled = true;
+        return;
+    }
+
+    ind.textContent = '⏳';
+    discordVerified = false;
+    btnA.disabled = true;
+    btnB.disabled = true;
+
+    verifyTimeout = setTimeout(async () => {
+        const res = await apiFetch('/api/verify-discord', { username: val.trim() });
+        if (res.valid) {
+            ind.innerHTML = '<span style="color:var(--green)">✓</span>';
+            discordVerified = true;
+            btnA.disabled = false;
+            btnB.disabled = false;
+        } else {
+            ind.innerHTML = '<span style="color:var(--red)">✗</span>';
+            discordVerified = false;
+            btnA.disabled = true;
+            btnB.disabled = true;
+        }
+    }, 600);
+}
+
+function showAbsenceForm() {
+    if (!discordVerified) return;
+    document.getElementById('absence-area').style.display = 'block';
+    document.getElementById('btn-attend').style.display = 'none';
+    document.getElementById('btn-absent').style.display = 'none';
+}
+
+function hideAbsenceForm() {
+    document.getElementById('absence-area').style.display = 'none';
+    document.getElementById('btn-attend').style.display = '';
+    document.getElementById('btn-absent').style.display = '';
+}
+
+async function respond(type) {
+    if (!discordVerified) { toast('Сначала укажите Discord', 'error'); return; }
+    const discord = document.getElementById('discord-input').value.trim().replace('@','');
+    const reason = type === 'absent' ? document.getElementById('absence-reason').value.trim() : '';
+
+    if (type === 'absent' && !reason) {
+        toast('Укажите причину отсутствия', 'error');
+        return;
+    }
+
+    const res = await apiFetch(`/meetings/${meetingId}/respond`, {
+        response: type,
+        discord_username: discord,
+        absence_reason: reason
+    });
+
+    if (res.ok) {
+        toast(type === 'attending' ? '✓ Вы подтвердили участие!' : '⏳ Причина отправлена на рассмотрение', 'success');
+        setTimeout(() => location.reload(), 1200);
+    } else {
+        toast(res.error || 'Ошибка', 'error');
+    }
+}
+
+async function reviewAbsence(mid, respId, decision) {
+    const label = decision === 'approved' ? 'одобрить' : 'отклонить (пометить Бездарём)';
+    if (!confirm(`Вы уверены что хотите ${label}?`)) return;
+    const res = await apiFetch(`/meetings/${mid}/absence/${respId}/review`, { decision });
+    if (res.ok) {
+        toast(decision === 'approved' ? 'Причина одобрена, уведомление отправлено' : 'Причина отклонена, уведомление отправлено', decision === 'approved' ? 'success' : 'error');
+        setTimeout(() => location.reload(), 1200);
+    } else {
+        toast('Ошибка', 'error');
+    }
+}
+
+async function loadStats() {
+    const res = await fetch(`/meetings/${meetingId}/stats`);
+    const d = await res.json();
+    document.getElementById('s-attending').textContent = d.attending;
+    document.getElementById('s-absent-ok').textContent = d.absent_approved;
+    document.getElementById('s-no-resp').textContent = d.no_response;
+    document.getElementById('s-absent-bad').textContent = d.absent_rejected;
+}
+
+// Auto-load stats for admin/owner
+{% if user.role in ('admin', 'owner') %}
+loadStats();
+socket.on('meeting_updated', (d) => { if (d.meeting_id === meetingId) loadStats(); });
+socket.on('absence_reviewed', () => loadStats());
+{% endif %}
+</script>
+{% endblock %}

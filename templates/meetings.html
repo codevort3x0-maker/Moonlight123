@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}MoonLight — Собрания{% endblock %}
+{% block page_title %}Собрания{% endblock %}
+
+{% block topbar_actions %}
+{% if user.role in ('admin', 'owner') %}
+<a href="/meetings/create" class="btn btn-primary btn-sm">＋ Создать собрание</a>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+
+{% if not meetings %}
+<div class="empty" style="padding:80px">
+    <div class="empty-icon">📭</div>
+    <div style="font-size:18px;font-weight:600;color:var(--text2);margin-bottom:8px">Нет собраний</div>
+    <div class="empty-text">
+        {% if user.role in ('admin', 'owner') %}
+        Создайте первое собрание, нажав кнопку выше.
+        {% else %}
+        Предстоящие собрания появятся здесь.
+        {% endif %}
+    </div>
+</div>
+{% else %}
+
+{% if user.role in ('admin', 'owner') %}
+<!-- Admin view - table -->
+<div class="card">
+    <div class="card-header">
+        <div class="card-title">Все собрания ({{ meetings|length }})</div>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Название</th>
+                    <th>Дата</th>
+                    <th>Создал</th>
+                    <th>Статус</th>
+                    <th>Участники</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for m in meetings %}
+            <tr>
+                <td>
+                    <div style="font-weight:600;color:var(--text)">{{ m.title }}</div>
+                    {% if m.description %}
+                    <div style="font-size:12px;color:var(--text3);margin-top:2px">{{ m.description[:60] }}{% if m.description|length > 60 %}…{% endif %}</div>
+                    {% endif %}
+                </td>
+                <td style="color:var(--text2);font-size:13px;white-space:nowrap">{{ m.scheduled_at[:16].replace('T',' ') }}</td>
+                <td style="color:var(--text2)">{{ m.creator or '—' }}</td>
+                <td><span class="badge badge-{{ m.status }}">{{ m.status }}</span></td>
+                <td>
+                    <span id="stats-{{ m.id }}" style="color:var(--text3);font-size:12px">…</span>
+                </td>
+                <td><a href="/meetings/{{ m.id }}" class="btn btn-ghost btn-sm">Открыть →</a></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% else %}
+<!-- Newbie view - cards -->
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px">
+{% for m in meetings %}
+<a href="/meetings/{{ m.id }}" style="text-decoration:none">
+    <div class="card meeting-card" style="cursor:pointer;transition:all .2s;border-color:var(--border)">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px">
+            <div style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:var(--text)">{{ m.title }}</div>
+            <span class="badge badge-upcoming">Скоро</span>
+        </div>
+        {% if m.description %}
+        <div style="color:var(--text2);font-size:13px;margin-bottom:16px;line-height:1.5">{{ m.description[:100] }}{% if m.description|length > 100 %}…{% endif %}</div>
+        {% endif %}
+        <div style="display:flex;align-items:center;gap:6px;color:var(--text3);font-size:12px">
+            <span>🕐</span>
+            <span>{{ m.scheduled_at[:16].replace('T',' ') }}</span>
+        </div>
+        <div style="margin-top:16px">
+            <span class="btn btn-primary btn-sm" style="width:100%;justify-content:center">Подтвердить участие →</span>
+        </div>
+    </div>
+</a>
+{% endfor %}
+</div>
+{% endif %}
+
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+{% if user.role in ('admin', 'owner') %}
+<script>
+// Load stats for each meeting
+const meetings = {{ meetings | map(attribute='id') | list | tojson }};
+meetings.forEach(async (id) => {
+    try {
+        const r = await fetch(`/meetings/${id}/stats`);
+        const d = await r.json();
+        const el = document.getElementById('stats-' + id);
+        if (el) el.innerHTML = `<span style="color:var(--green)">✓ ${d.attending}</span> / <span style="color:var(--red)">✗ ${d.absent_rejected}</span>`;
+    } catch {}
+});
+</script>
+{% endif %}
+<style>
+.meeting-card:hover {
+    border-color: var(--accent) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(79,142,247,.15);
+}
+</style>
+{% endblock %}

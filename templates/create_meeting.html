@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}MoonLight — Создать собрание{% endblock %}
+{% block page_title %}Создать собрание{% endblock %}
+
+{% block topbar_actions %}
+<a href="/meetings" class="btn btn-ghost btn-sm">← Назад</a>
+{% endblock %}
+
+{% block content %}
+
+<div style="max-width:600px">
+    <div class="card">
+        <form method="POST" action="/meetings/create">
+            <div class="form-group">
+                <label class="form-label">Название собрания *</label>
+                <input name="title" class="form-input" placeholder="Еженедельное собрание" required>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Описание</label>
+                <textarea name="description" class="form-input" placeholder="Краткое описание повестки..." rows="3"></textarea>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Дата и время *</label>
+                <input type="datetime-local" name="scheduled_at" class="form-input" required id="dt-input">
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">ID канала Discord для уведомления</label>
+                <input name="notify_channel" class="form-input" placeholder="1234567890123456789" pattern="[0-9]*">
+                <div style="font-size:11px;color:var(--text3);margin-top:6px">Оставьте пустым чтобы не отправлять уведомление в Discord</div>
+            </div>
+
+            <div style="display:flex;gap:10px;margin-top:8px">
+                <button type="submit" class="btn btn-primary">📅 Создать собрание</button>
+                <a href="/meetings" class="btn btn-ghost">Отмена</a>
+            </div>
+        </form>
+    </div>
+
+    <!-- Preview -->
+    <div class="card" style="margin-top:20px;border-color:rgba(79,142,247,.2)">
+        <div class="card-title" style="margin-bottom:16px">👁 Предпросмотр Discord уведомления</div>
+        <div style="background:#2f3136;border-radius:8px;padding:16px;border-left:4px solid #5865F2">
+            <div style="color:#fff;font-weight:700;font-size:15px;margin-bottom:6px">📅 Новое собрание: <span id="prev-title">—</span></div>
+            <div style="color:#dcddde;font-size:14px;margin-bottom:10px" id="prev-desc"></div>
+            <div style="display:flex;gap:24px">
+                <div>
+                    <div style="color:#b9bbbe;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px">🕐 Время</div>
+                    <div style="color:#dcddde;font-size:14px" id="prev-time">—</div>
+                </div>
+                <div>
+                    <div style="color:#b9bbbe;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px">👤 Создал</div>
+                    <div style="color:#dcddde;font-size:14px">{{ user.username }}</div>
+                </div>
+            </div>
+            <div style="color:#72767d;font-size:11px;margin-top:10px">MoonLight • Перейдите на сайт для подтверждения участия</div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Set default datetime to now + 1 day
+const now = new Date();
+now.setDate(now.getDate() + 1);
+now.setMinutes(0, 0, 0);
+document.getElementById('dt-input').value = now.toISOString().slice(0, 16);
+updatePreview();
+
+document.querySelector('[name=title]').addEventListener('input', updatePreview);
+document.querySelector('[name=description]').addEventListener('input', updatePreview);
+document.getElementById('dt-input').addEventListener('input', updatePreview);
+
+function updatePreview() {
+    const title = document.querySelector('[name=title]').value || '—';
+    const desc = document.querySelector('[name=description]').value || '';
+    const dt = document.getElementById('dt-input').value;
+
+    document.getElementById('prev-title').textContent = title;
+    document.getElementById('prev-desc').textContent = desc;
+
+    if (dt) {
+        const d = new Date(dt);
+        document.getElementById('prev-time').textContent = d.toLocaleString('ru-RU', {
+            day: '2-digit', month: '2-digit', year: 'numeric',
+            hour: '2-digit', minute: '2-digit'
+        });
+    }
+}
+</script>
+{% endblock %}

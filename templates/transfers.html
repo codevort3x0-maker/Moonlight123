@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block title %}MoonLight — Переводы{% endblock %}
+{% block page_title %}Переводы{% endblock %}
+
+{% block topbar_actions %}
+<button class="btn btn-primary btn-sm" onclick="document.getElementById('create-modal').classList.add('open')">＋ Создать перевод</button>
+{% endblock %}
+
+{% block content %}
+
+{% set pending_list = transfers | selectattr('status', 'equalto', 'pending') | list %}
+{% set approved_list = transfers | selectattr('status', 'equalto', 'approved') | list %}
+{% set rejected_list = transfers | selectattr('status', 'equalto', 'rejected') | list %}
+
+<!-- Stats row -->
+<div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:24px">
+    <div class="stat-card gold">
+        <div class="stat-value">{{ pending_list | length }}</div>
+        <div class="stat-label">Ожидают</div>
+        <div class="stat-icon">⏳</div>
+    </div>
+    <div class="stat-card green">
+        <div class="stat-value">{{ approved_list | length }}</div>
+        <div class="stat-label">Одобрены</div>
+        <div class="stat-icon">✓</div>
+    </div>
+    <div class="stat-card red">
+        <div class="stat-value">{{ rejected_list | length }}</div>
+        <div class="stat-label">Отклонены</div>
+        <div class="stat-icon">✗</div>
+    </div>
+</div>
+
+<!-- Pending -->
+{% if pending_list %}
+<div class="card" style="margin-bottom:20px;border-color:rgba(240,160,64,.3)">
+    <div class="card-header">
+        <div class="card-title" style="color:var(--orange)">⏳ Ожидают решения</div>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Организация</th>
+                    <th>Кому</th>
+                    <th>От кого</th>
+                    <th>Причина</th>
+                    <th>Создал</th>
+                    <th>Дата</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for t in pending_list %}
+            <tr id="t-row-{{ t.id }}">
+                <td>
+                    <span style="font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:700;color:var(--accent)">{{ t.organization }}</span>
+                </td>
+                <td style="color:var(--text);font-weight:600">{{ t.to_name or '—' }}</td>
+                <td style="color:var(--text2)">{{ t.from_name or '—' }}</td>
+                <td style="color:var(--text2);font-size:13px;max-width:200px">{{ t.reason or '—' }}</td>
+                <td style="color:var(--text3);font-size:12px">{{ t.creator_name or '—' }}</td>
+                <td style="color:var(--text3);font-size:12px">{{ t.created_at[:10] }}</td>
+                <td>
+                    <div style="display:flex;gap:6px">
+                        <button class="btn btn-success btn-sm" onclick="reviewTransfer({{ t.id }}, 'approved')">✓ Одобрить</button>
+                        <button class="btn btn-danger btn-sm" onclick="reviewTransfer({{ t.id }}, 'rejected')">✗ Отклонить</button>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- All Transfers -->
+<div class="card">
+    <div class="card-header">
+        <div class="card-title">Все переводы</div>
+        <div style="display:flex;gap:8px">
+            <button class="btn btn-ghost btn-sm" onclick="filterStatus('')" id="f-all">Все</button>
+            <button class="btn btn-ghost btn-sm" onclick="filterStatus('approved')" id="f-approved">Одобрены</button>
+            <button class="btn btn-ghost btn-sm" onclick="filterStatus('rejected')" id="f-rejected">Отклонены</button>
+        </div>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Организация</th>
+                    <th>Кому</th>
+                    <th>От кого</th>
+                    <th>Причина</th>
+                    <th>Создал</th>
+                    <th>Рассмотрел</th>
+                    <th>Статус</th>
+                    <th>Дата</th>
+                </tr>
+            </thead>
+            <tbody id="transfers-tbody">
+            {% for t in transfers %}
+            <tr class="t-row" data-status="{{ t.status }}">
+                <td>
+                    <span style="font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:700;color:var(--accent)">{{ t.organization }}</span>
+                </td>
+                <td style="color:var(--text);font-weight:600">{{ t.to_name or '—' }}</td>
+                <td style="color:var(--text2)">{{ t.from_name or '—' }}</td>
+                <td style="color:var(--text2);font-size:13px;max-width:180px">{{ (t.reason or '—')[:60] }}</td>
+                <td style="color:var(--text3);font-size:12px">{{ t.creator_name or '—' }}</td>
+                <td style="color:var(--text3);font-size:12px">{{ t.reviewer_name or '—' }}</td>
+                <td><span class="badge badge-{{ t.status }}">{{ t.status }}</span></td>
+                <td style="color:var(--text3);font-size:12px;white-space:nowrap">{{ t.created_at[:10] }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" style="text-align:center;color:var(--text3);padding:40px">Нет переводов</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Create Transfer Modal -->
+<div class="modal-overlay" id="create-modal">
+    <div class="modal">
+        <div class="modal-title">🔄 Новый перевод</div>
+
+        <div class="form-group">
+            <label class="form-label">Организация</label>
+            <select id="t-org" class="form-input">
+                <option value="Архитектор">Архитектор</option>
+                <option value="Вестник">Вестник</option>
+                <option value="Меценат">Меценат</option>
+                <option value="Ловец">Ловец</option>
+                <option value="Ритуалист">Ритуалист</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Кому (получатель)</label>
+            <select id="t-to" class="form-input">
+                <option value="">— Не указан —</option>
+                {% for u in all_users %}
+                <option value="{{ u.id }}">{{ u.username }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">От кого</label>
+            <select id="t-from" class="form-input">
+                <option value="">— Не указан —</option>
+                {% for u in all_users %}
+                <option value="{{ u.id }}">{{ u.username }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Причина</label>
+            <textarea id="t-reason" class="form-input" placeholder="Причина перевода..." rows="3"></textarea>
+        </div>
+
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="document.getElementById('create-modal').classList.remove('open')">Отмена</button>
+            <button class="btn btn-primary" onclick="createTransfer()">Создать</button>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function reviewTransfer(tid, decision) {
+    const label = decision === 'approved' ? 'одобрить' : 'отклонить';
+    if (!confirm(`Вы уверены что хотите ${label}?`)) return;
+    const res = await apiFetch(`/transfers/${tid}/review`, { decision });
+    if (res.ok) {
+        const row = document.getElementById('t-row-' + tid);
+        if (row) row.remove();
+        toast(decision === 'approved' ? 'Перевод одобрен' : 'Перевод отклонён', decision === 'approved' ? 'success' : 'error');
+        setTimeout(() => location.reload(), 1000);
+    }
+}
+
+async function createTransfer() {
+    const org = document.getElementById('t-org').value;
+    const to = document.getElementById('t-to').value;
+    const from = document.getElementById('t-from').value;
+    const reason = document.getElementById('t-reason').value.trim();
+
+    if (!org) { toast('Укажите организацию', 'error'); return; }
+
+    const res = await apiFetch('/transfers/create', {
+        organization: org,
+        to_user_id: to || null,
+        from_user_id: from || null,
+        reason: reason
+    });
+
+    if (res.ok) {
+        document.getElementById('create-modal').classList.remove('open');
+        toast('Перевод создан!', 'success');
+        setTimeout(() => location.reload(), 800);
+    } else {
+        toast('Ошибка создания', 'error');
+    }
+}
+
+function filterStatus(status) {
+    document.querySelectorAll('.t-row').forEach(row => {
+        row.style.display = (!status || row.dataset.status === status) ? '' : 'none';
+    });
+}
+
+document.getElementById('create-modal').addEventListener('click', function(e) {
+    if (e.target === this) this.classList.remove('open');
+});
+
+socket.on('transfer_created', () => { toast('Новый перевод добавлен!'); });
+socket.on('transfer_updated', () => location.reload());
+</script>
+{% endblock %}
