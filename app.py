@@ -400,21 +400,23 @@ def users_list():
     conn = get_db()
     
     if user['role'] == 'admin':
-        users = conn.execute('''
-            SELECT id, username, role, approved, discord_id, created_at 
+        all_users = conn.execute('''
+            SELECT id, username, role, approved, discord_id, discord_username, discord_avatar, created_at 
             FROM users 
             ORDER BY created_at DESC
         ''').fetchall()
     else:
-        users = conn.execute('''
-            SELECT id, username, role, approved, discord_id, created_at 
+        all_users = conn.execute('''
+            SELECT id, username, role, approved, discord_id, discord_username, discord_avatar, created_at 
             FROM users 
             WHERE role != 'admin'
             ORDER BY created_at DESC
         ''').fetchall()
     
+    pending = [u for u in all_users if not u['approved']]
+    
     conn.close()
-    return render_template('users.html', user=user, users=users)
+    return render_template('users.html', user=user, all_users=all_users, pending=pending)
 
 @app.route('/users/<int:uid>/toggle-approve', methods=['POST'])
 @role_required('admin', 'owner')
