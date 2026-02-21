@@ -66,6 +66,17 @@ def init_db():
             FOREIGN KEY (created_by) REFERENCES users (id)
         )
     ''')
+
+        # Добавь после создания таблицы meetings
+    try:
+        conn.execute('ALTER TABLE meetings ADD COLUMN voice_channel_id TEXT')
+    except:
+        pass
+
+    try:
+        conn.execute('ALTER TABLE meetings ADD COLUMN voice_stats TEXT')  # для хранения статистики в JSON
+    except:
+        pass
     
     # Таблица ответов на собрания
     conn.execute('''
@@ -99,6 +110,19 @@ def init_db():
             reviewed_at TIMESTAMP,
             FOREIGN KEY (created_by) REFERENCES users (id),
             FOREIGN KEY (reviewed_by) REFERENCES users (id)
+        )
+    ''')
+
+# В init_db() после других таблиц
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS voice_activity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            discord_username TEXT NOT NULL,
+            action TEXT NOT NULL,  -- 'join' or 'leave'
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (meeting_id) REFERENCES meetings (id)
         )
     ''')
     
@@ -649,6 +673,7 @@ def create_meeting():
         scheduled_at = request.form.get('scheduled_at', '')
         notify_channel = request.form.get('notify_channel', '').strip()
         role_id = request.form.get('role_id', '').strip()
+        voice_channel_id = request.form.get('voice_channel_id', '').strip()  # новое поле
 
         if not title or not scheduled_at:
             flash('Заполните название и время.', 'error')
@@ -656,43 +681,11 @@ def create_meeting():
 
         conn = get_db()
         c = conn.execute(
-            'INSERT INTO meetings (title, description, scheduled_at, created_by, role_id, notify_channel) VALUES (?, ?, ?, ?, ?, ?)',
-            (title, description, scheduled_at, session['user_id'], role_id if role_id else None, notify_channel)
+            'INSERT INTO meetings (title, description, scheduled_at, created_by, role_id, notify_channel, voice_channel_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (title, description, scheduled_at, session['user_id'], role_id if role_id else None, notify_channel, voice_channel_id if voice_channel_id else None)
         )
         meeting_id = c.lastrowid
         conn.commit()
-
-        if notify_channel and DISCORD_TOKEN:
-            dt = datetime.fromisoformat(scheduled_at)
-            site_url = request.host_url.rstrip('/')
-            meeting_url = f"{site_url}/meetings/{meeting_id}"
-            
-            content = None
-            if role_id:
-                content = f"<@&{role_id}>"
-            
-            embed = {
-                "title": f"📅 Новое собрание: {title}",
-                "description": description or "Собрание назначено.",
-                "color": 0x5865F2,
-                "fields": [
-                    {"name": "🕐 Время", "value": dt.strftime('%d.%m.%Y %H:%M'), "inline": True},
-                    {"name": "👤 Создал", "value": session['username'], "inline": True},
-                    {"name": "🔗 Ссылка", "value": f"[Перейти к собранию]({meeting_url})", "inline": False}
-                ],
-                "footer": {"text": "MoonLight • Подтвердите участие на сайте"}
-            }
-            msg_id = send_discord_channel_message(notify_channel, embed, content)
-
-            if msg_id:
-                conn.execute('UPDATE meetings SET discord_message_id=? WHERE id=?', (msg_id, meeting_id))
-                conn.commit()
-
-        conn.close()
-        flash('Собрание создано!', 'success')
-        return redirect(url_for('meetings'))
-
-    return render_template('create_meeting.html', user=user)
 
 @app.route('/meetings/<int:mid>')
 @login_required
@@ -998,7 +991,7 @@ async def check_upcoming_meetings():
             for meeting in meetings:
                 if DISCORD_TOKEN and meeting['notify_channel']:
                     site_url = request.host_url.rstrip('/') if request else "https://moonlight.app"
-                    meeting_url = f"{site_url}/meeting/{meeting['id']}"
+                    meeting_url = f"{site_url}/meetings/{meeting['id']}"
                     
                     content = None
                     if meeting['role_id']:
