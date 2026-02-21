@@ -1048,6 +1048,84 @@ def meeting_stats(mid):
         'no_response': no_response
     })
 
+@app.route('/meetings/<int:mid>/attendance-stats')
+@login_required
+def attendance_stats(mid):
+    """Полная статистика по собранию: кто отметился, кто пришел, кто не пришел"""
+    user = get_current_user()
+    conn = get_db()
+    
+    # Получаем всех кто отметился на сайте
+    responses = conn.execute('''
+        SELECT mr.*, u.username, u.discord_id 
+        FROM meeting_responses mr
+        JOIN users u ON mr.user_id = u.id
+        WHERE mr.meeting_id=?
+    ''', (mid,)).fetchall()
+    
+    # Получаем голосовую активность
+    voice = conn.execute('''
+        SELECT * FROM voice_activity 
+        WHERE meeting_id=?
+        ORDER BY timestamp
+    ''', (mid,)).fetchall()
+    
+    # Получаем собрание
+    meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
+    
+    # Анализируем
+    stats = {
+        'total_responded': len(responses),
+        'attending_site': 0,  # Отметили "Приду" на сайте
+        'absent_site': 0,      # Отметили "Не приду" на сайте
+        'came_to_voice': 0,     # Пришли в голосовой канал
+        'confirmed': [],        # Отметили и пришли
+        'no_show': [],          # Отметили но не пришли
+        'unexpected': [],       # Не отмечали но пришли
+        'voice_participants': set()
+    }
+    
+    # Собираем кто был в голосовом канале
+    voice_users = set()
+    for v in voice:
+        if v['action'] == 'join':
+            voice_users.add(v['user_id'])
+            stats['voice_participants'].add(v['discord_username'])
+    
+    stats['total_voice'] = len(voice_users)
+    
+    # Анализируем ответы
+    for r in responses:
+        if r['response'] == 'attending':
+            stats['attending_site'] += 1
+            if r['discord_id'] in voice_users:
+                stats['came_to_voice'] += 1
+                stats['confirmed'].append({
+                    'username': r['username'],
+                    'discord': r['discord_username']
+                })
+            else:
+                stats['no_show'].append({
+                    'username': r['username'],
+                    'discord': r['discord_username']
+                })
+        else:
+            stats['absent_site'] += 1
+    
+    # Кто пришел без отметки
+    for v in voice:
+        if v['user_id'] not in [r['discord_id'] for r in responses if r['discord_id']]:
+            stats['unexpected'].append({
+                'discord': v['discord_username']
+            })
+    
+    # Убираем дубликаты
+    stats['unexpected'] = list({u['discord'] for u in stats['unexpected']})
+    
+    conn.close()
+    
+    return jsonify(stats)
+
 # Фоновая задача для напоминаний
 async def check_upcoming_meetings():
     """Проверка собраний и отправка напоминаний за 5 минут"""
@@ -1100,13 +1178,23 @@ async def check_upcoming_meetings():
 async def monitor_voice_channel(meeting_id, voice_channel_id):
     """Мониторинг голосового канала во время собрания"""
     if not DISCORD_TOKEN or not voice_channel_id:
+        print(f"❌ Нет токена или ID канала для собрания {meeting_id}")
         return
+    
+    print(f"🎤 Начинаем мониторинг собрания {meeting_id} в канале {voice_channel_id}")
     
     try:
         url = f"https://discord.com/api/v10/channels/{voice_channel_id}"
         headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
         
-        tracked_users = {}  # {user_id: join_time}
+        # Проверяем доступ к каналу
+        channel_check = requests.get(url, headers=headers)
+        if channel_check.status_code != 200:
+            print(f"❌ Нет доступа к каналу {voice_channel_id}: {channel_check.status_code}")
+            return
+        
+        tracked_users = {}  # {user_id: {'name': username, 'joined_at': time}}
+        notified_attendance = set()  # Кому уже отправили уведомление о приходе
         
         while True:
             try:
@@ -1115,6 +1203,7 @@ async def monitor_voice_channel(meeting_id, voice_channel_id):
                 meeting = conn.execute('SELECT status FROM meetings WHERE id=?', (meeting_id,)).fetchone()
                 
                 if not meeting or meeting['status'] != 'active':
+                    print(f"⏹ Собрание {meeting_id} завершено, останавливаем мониторинг")
                     conn.close()
                     break
                 
@@ -1123,48 +1212,96 @@ async def monitor_voice_channel(meeting_id, voice_channel_id):
                 
                 if response.status_code == 200:
                     members = response.json()
-                    current_users = {m['user']['id']: m['user']['username'] for m in members}
+                    current_users = {}
+                    
+                    # Преобразуем в формат {user_id: username}
+                    for m in members:
+                        user_id = m['user']['id']
+                        username = m['user']['username']
+                        current_users[user_id] = username
                     
                     # Проверяем кто зашел
                     for uid, username in current_users.items():
                         if uid not in tracked_users:
-                            tracked_users[uid] = datetime.now()
+                            # Новый участник
+                            joined_at = datetime.now()
+                            tracked_users[uid] = {'name': username, 'joined_at': joined_at}
+                            
+                            # Логируем заход
                             try:
                                 conn.execute('''
-                                    INSERT INTO voice_activity (meeting_id, user_id, discord_username, action)
-                                    VALUES (?, ?, ?, 'join')
-                                ''', (meeting_id, uid, username))
+                                    INSERT INTO voice_activity 
+                                    (meeting_id, user_id, discord_username, action, timestamp) 
+                                    VALUES (?, ?, ?, ?, ?)
+                                ''', (meeting_id, uid, username, 'join', joined_at.strftime('%Y-%m-%d %H:%M:%S')))
                                 conn.commit()
+                                print(f"✅ {username} зашел в голосовой канал")
                             except Exception as e:
-                                print(f"Error logging join: {e}")
+                                print(f"Ошибка логирования захода: {e}")
+                            
+                            # Проверяем, отмечался ли этот пользователь на сайте
+                            site_user = conn.execute('''
+                                SELECT mr.* FROM meeting_responses mr
+                                JOIN users u ON mr.user_id = u.id
+                                WHERE mr.meeting_id=? AND u.discord_id=?
+                            ''', (meeting_id, uid)).fetchone()
+                            
+                            if site_user and site_user['response'] == 'attending' and uid not in notified_attendance:
+                                # Пользователь отмечался и пришел - отправляем уведомление
+                                notified_attendance.add(uid)
+                                print(f"🎉 {username} подтвердил участие на сайте и пришел в голосовой канал!")
+                                
+                                # Можно отправить сообщение в канал или админу
+                                if meeting['notify_channel']:
+                                    embed = {
+                                        "title": "✅ Участник прибыл",
+                                        "color": 0x57F287,
+                                        "fields": [
+                                            {"name": "Пользователь", "value": username, "inline": True},
+                                            {"name": "Собрание", "value": meeting['title'], "inline": True}
+                                        ]
+                                    }
+                                    send_discord_channel_message(meeting['notify_channel'], embed)
                     
                     # Проверяем кто вышел
                     to_remove = []
-                    for uid, join_time in tracked_users.items():
+                    for uid, data in tracked_users.items():
                         if uid not in current_users:
                             to_remove.append(uid)
+                            leave_time = datetime.now()
+                            
+                            # Логируем выход
                             try:
                                 conn.execute('''
-                                    INSERT INTO voice_activity (meeting_id, user_id, discord_username, action)
-                                    VALUES (?, ?, ?, 'leave')
-                                ''', (meeting_id, uid, username))
+                                    INSERT INTO voice_activity 
+                                    (meeting_id, user_id, discord_username, action, timestamp) 
+                                    VALUES (?, ?, ?, ?, ?)
+                                ''', (meeting_id, uid, data['name'], 'leave', leave_time.strftime('%Y-%m-%d %H:%M:%S')))
                                 conn.commit()
+                                print(f"👋 {data['name']} вышел из голосового канала")
                             except Exception as e:
-                                print(f"Error logging leave: {e}")
+                                print(f"Ошибка логирования выхода: {e}")
                     
                     for uid in to_remove:
                         del tracked_users[uid]
+                    
+                    # Выводим статистику раз в минуту
+                    if int(datetime.now().timestamp()) % 60 < 10:
+                        print(f"📊 В голосовом канале сейчас: {len(tracked_users)} человек")
                 
                 conn.close()
                 
             except Exception as e:
                 print(f"Ошибка в цикле мониторинга: {e}")
+                try:
+                    conn.close()
+                except:
+                    pass
             
             await asyncio.sleep(10)  # Проверяем каждые 10 секунд
             
     except Exception as e:
-        print(f"Ошибка мониторинга голосового канала: {e}")
-
+        print(f"❌ Фатальная ошибка мониторинга: {e}")
 if __name__ == "__main__":
     # Запускаем фоновую задачу
     loop = asyncio.new_event_loop()
