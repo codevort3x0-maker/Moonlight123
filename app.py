@@ -647,37 +647,6 @@ def meeting_respond(mid):
     socketio.emit('meeting_updated', {'meeting_id': mid})
     return jsonify({'ok': True, 'message': 'Ответ сохранен'})
 
-function showChangeAbsenceForm() {
-    document.getElementById('change-absence-area').style.display = 'block';
-}
-
-function hideChangeAbsenceForm() {
-    document.getElementById('change-absence-area').style.display = 'none';
-}
-
-async function updateAbsence() {
-    const discord = '{{ my_response.discord_username if my_response else "" }}';
-    const reason = document.getElementById('change-absence-reason').value.trim();
-    
-    if (!reason) {
-        toast('Укажите причину', 'error');
-        return;
-    }
-    
-    const res = await apiFetch(`/meetings/${meetingId}/respond`, {
-        response: 'absent',
-        discord_username: discord,
-        absence_reason: reason
-    });
-    
-    if (res.ok) {
-        toast('Причина обновлена', 'success');
-        setTimeout(() => location.reload(), 1200);
-    } else {
-        toast(res.error || 'Ошибка', 'error');
-    }
-}
-
 @app.route('/meetings/<int:mid>/absence/<int:resp_id>/review', methods=['POST'])
 @role_required('admin', 'owner')
 def review_absence(mid, resp_id):
