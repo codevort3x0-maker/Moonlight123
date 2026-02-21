@@ -882,6 +882,57 @@ def create_dm_channel(user_id):
         pass
     return None
 
+@app.route('/meetings/<int:mid>/start', methods=['POST'])
+@role_required('admin', 'owner')
+def start_meeting(mid):
+    conn = get_db()
+    meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
+    
+    if not meeting:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Собрание не найдено'})
+    
+    conn.execute('UPDATE meetings SET status="active" WHERE id=?', (mid,))
+    conn.commit()
+    conn.close()
+    
+    socketio.emit('meeting_updated', {'meeting_id': mid})
+    return jsonify({'ok': True})
+
+@app.route('/meetings/<int:mid>/finish', methods=['POST'])
+@role_required('admin', 'owner')
+def finish_meeting(mid):
+    conn = get_db()
+    meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
+    
+    if not meeting:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Собрание не найдено'})
+    
+    conn.execute('UPDATE meetings SET status="finished" WHERE id=?', (mid,))
+    conn.commit()
+    conn.close()
+    
+    socketio.emit('meeting_updated', {'meeting_id': mid})
+    return jsonify({'ok': True})
+
+@app.route('/meetings/<int:mid>/cancel', methods=['POST'])
+@role_required('admin', 'owner')
+def cancel_meeting(mid):
+    conn = get_db()
+    meeting = conn.execute('SELECT * FROM meetings WHERE id=?', (mid,)).fetchone()
+    
+    if not meeting:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Собрание не найдено'})
+    
+    conn.execute('UPDATE meetings SET status="cancelled" WHERE id=?', (mid,))
+    conn.commit()
+    conn.close()
+    
+    socketio.emit('meeting_updated', {'meeting_id': mid})
+    return jsonify({'ok': True})
+
 @app.route('/api/verify-discord', methods=['POST'])
 def api_verify_discord():
     data = request.json
