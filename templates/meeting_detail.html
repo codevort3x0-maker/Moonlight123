@@ -180,7 +180,15 @@
             </div>
             <div class="embed-field">
                 <div class="embed-field-name">📌 Статус</div>
-                <div class="embed-field-value"><span class="badge badge-{{ meeting.status }}">{{ meeting.status }}</span></div>
+                <div class="embed-field-value">
+                    <span class="badge badge-{{ meeting.status }}">
+        {% if meeting.status == 'upcoming' %}📅 Предстоит
+        {% elif meeting.status == 'active' %}▶ Идет сейчас
+        {% elif meeting.status == 'finished' %}✅ Завершено
+        {% elif meeting.status == 'cancelled' %}❌ Отменено
+        {% else %}{{ meeting.status }}{% endif %}
+    </span>    
+                </div>
             </div>
         </div>
     </div>
@@ -298,6 +306,28 @@
                 <div style="font-size:11px;color:var(--red);text-transform:uppercase;letter-spacing:1px;font-weight:700">Бездари</div>
             </div>
         </div>
+
+            {% if user.role in ('admin', 'owner') and meeting.status != 'finished' and meeting.status != 'cancelled' %}
+    <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+            <div class="card-title">🎮 Управление собранием</div>
+        </div>
+        <div style="display:flex;gap:10px;padding:10px 0">
+            {% if meeting.status == 'upcoming' %}
+            <button class="btn btn-success" onclick="startMeeting({{ meeting.id }})">
+                ▶ Начать собрание
+            </button>
+            <button class="btn btn-danger" onclick="cancelMeeting({{ meeting.id }})">
+                ✕ Отменить собрание
+            </button>
+            {% elif meeting.status == 'active' %}
+            <button class="btn btn-warning" onclick="finishMeeting({{ meeting.id }})">
+                ⏹ Завершить собрание
+            </button>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
     </div>
 
     <!-- Attendees -->
@@ -497,6 +527,33 @@ async function reviewAbsence(mid, respId, decision) {
         setTimeout(() => location.reload(), 1200);
     } else {
         toast('Ошибка', 'error');
+    }
+}
+
+async function startMeeting(mid) {
+    if (!confirm('Начать собрание?')) return;
+    const res = await apiFetch(`/meetings/${mid}/start`, {});
+    if (res.ok) {
+        toast('Собрание начато', 'success');
+        setTimeout(() => location.reload(), 1000);
+    }
+}
+
+async function finishMeeting(mid) {
+    if (!confirm('Завершить собрание?')) return;
+    const res = await apiFetch(`/meetings/${mid}/finish`, {});
+    if (res.ok) {
+        toast('Собрание завершено', 'success');
+        setTimeout(() => location.reload(), 1000);
+    }
+}
+
+async function cancelMeeting(mid) {
+    if (!confirm('Отменить собрание?')) return;
+    const res = await apiFetch(`/meetings/${mid}/cancel`, {});
+    if (res.ok) {
+        toast('Собрание отменено', 'success');
+        setTimeout(() => location.reload(), 1000);
     }
 }
 
