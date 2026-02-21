@@ -680,10 +680,10 @@ def create_meeting():
             return redirect(url_for('create_meeting'))
 
         conn = get_db()
-        c = conn.execute(
-            '''INSERT INTO meetings 
-               (title, description, scheduled_at, created_by, role_id, notify_channel, voice_channel_id, dm_sent) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, 0)''',
+    c = conn.execute(
+        '''INSERT INTO meetings 
+           (title, description, scheduled_at, created_by, role_id, notify_channel, voice_channel_id) 
+           VALUES (?, ?, ?, ?, ?, ?, ?)''',
             (title, description, scheduled_at, session['user_id'], 
              role_id if role_id else None, 
              notify_channel if notify_channel else None,
