@@ -140,7 +140,7 @@ def get_current_user():
     if 'user_id' not in session:
         return None
     conn = get_db()
-    user = conn.execute('SELECT id, username, role, approved FROM users WHERE id=?', (session['user_id'],)).fetchone()
+    user = conn.execute('SELECT id, username, role, approved, created_at FROM users WHERE id=?', (session['user_id'],)).fetchone()
     conn.close()
     return user
 
