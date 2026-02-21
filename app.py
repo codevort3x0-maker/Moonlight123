@@ -520,6 +520,44 @@ def users_list():
     conn.close()
     return render_template('users.html', user=user, all_users=all_users, pending=pending)
 
+@app.route('/users/<int:uid>/approve', methods=['POST'])
+@role_required('admin', 'owner')
+def approve_user(uid):
+    if uid == session['user_id']:
+        return jsonify({'ok': False, 'error': 'Нельзя одобрить себя'})
+    
+    conn = get_db()
+    user = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+    
+    if user['role'] == 'admin' and session['role'] != 'admin':
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Нельзя изменять админа'})
+    
+    conn.execute('UPDATE users SET approved=1 WHERE id=?', (uid,))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'ok': True})
+
+@app.route('/users/<int:uid>/reject', methods=['POST'])
+@role_required('admin', 'owner')
+def reject_user(uid):
+    if uid == session['user_id']:
+        return jsonify({'ok': False, 'error': 'Нельзя удалить себя'})
+    
+    conn = get_db()
+    user = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+    
+    if user['role'] == 'admin' and session['role'] != 'admin':
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Нельзя удалить админа'})
+    
+    conn.execute('DELETE FROM users WHERE id=?', (uid,))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'ok': True})
+
 @app.route('/users/<int:uid>/toggle-approve', methods=['POST'])
 @role_required('admin', 'owner')
 def toggle_approve(uid):
