@@ -519,15 +519,19 @@ def create_meeting():
         msg_id = None
         if notify_channel and DISCORD_BOT_TOKEN:
             dt = datetime.fromisoformat(scheduled_at)
+            site_url = request.host_url.rstrip('/')
+            meeting_url = f"{site_url}/meeting/{meeting_id}"
+            
             embed = {
                 "title": f"📅 Новое собрание: {title}",
                 "description": description or "Собрание назначено.",
                 "color": 0x5865F2,
                 "fields": [
                     {"name": "🕐 Время", "value": dt.strftime('%d.%m.%Y %H:%M'), "inline": True},
-                    {"name": "👤 Создал", "value": session['username'], "inline": True}
+                    {"name": "👤 Создал", "value": session['username'], "inline": True},
+                    {"name": "🔗 Ссылка", "value": f"[Перейти к собранию]({meeting_url})", "inline": False}
                 ],
-                "footer": {"text": "MoonLight • Перейдите на сайт для подтверждения участия"}
+                "footer": {"text": "MoonLight • Подтвердите участие на сайте"}
             }
             msg_id = send_discord_channel_message(notify_channel, embed)
 
@@ -540,7 +544,6 @@ def create_meeting():
         return redirect(url_for('meetings'))
 
     return render_template('create_meeting.html', user=user)
-
 @app.route('/meetings/<int:mid>')
 @login_required
 def meeting_detail(mid):
