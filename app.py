@@ -7,6 +7,7 @@ from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
 from flask_socketio import SocketIO, emit
 import requests
+import json
 import asyncio
 from dotenv import load_dotenv
 
@@ -887,10 +888,44 @@ def start_meeting(mid):
     
     conn.execute('UPDATE meetings SET status="active" WHERE id=?', (mid,))
     conn.commit()
+    
+    # Запускаем мониторинг если указан голосовой канал
+    if meeting['voice_channel_id'] and DISCORD_TOKEN:
+        asyncio.create_task(monitor_voice_channel(mid, meeting['voice_channel_id']))
+    
     conn.close()
     
     socketio.emit('meeting_updated', {'meeting_id': mid})
     return jsonify({'ok': True})
+
+@app.route('/meetings/<int:mid>/voice-stats')
+@login_required
+def voice_stats(mid):
+    user = get_current_user()
+    conn = get_db()
+    
+    activity = conn.execute('''
+        SELECT * FROM voice_activity 
+        WHERE meeting_id=? 
+        ORDER BY timestamp
+    ''', (mid,)).fetchall()
+    
+    # Группируем по пользователям
+    stats = {}
+    for a in activity:
+        if a['discord_username'] not in stats:
+            stats[a['discord_username']] = {'joins': 0, 'leaves': 0, 'first_seen': a['timestamp'], 'last_seen': a['timestamp']}
+        
+        if a['action'] == 'join':
+            stats[a['discord_username']]['joins'] += 1
+        else:
+            stats[a['discord_username']]['leaves'] += 1
+        
+        stats[a['discord_username']]['last_seen'] = a['timestamp']
+    
+    conn.close()
+    
+    return jsonify({'stats': stats})
 
 @app.route('/meetings/<int:mid>/finish', methods=['POST'])
 @role_required('admin', 'owner')
@@ -1016,6 +1051,64 @@ async def check_upcoming_meetings():
             print(f"Ошибка в напоминалке: {e}")
         
         await asyncio.sleep(30)
+
+async def monitor_voice_channel(meeting_id, voice_channel_id):
+    """Мониторинг голосового канала во время собрания"""
+    if not DISCORD_TOKEN or not voice_channel_id:
+        return
+    
+    url = f"https://discord.com/api/v10/channels/{voice_channel_id}"
+    headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
+    
+    tracked_users = {}  # {user_id: join_time}
+    
+    while True:
+        try:
+            # Проверяем статус собрания
+            conn = get_db()
+            meeting = conn.execute('SELECT status FROM meetings WHERE id=?', (meeting_id,)).fetchone()
+            
+            if not meeting or meeting['status'] != 'active':
+                conn.close()
+                break
+            
+            # Получаем список участников в голосовом канале
+            response = requests.get(f"{url}/members", headers=headers)
+            
+            if response.status_code == 200:
+                members = response.json()
+                current_users = {m['user']['id']: m['user']['username'] for m in members}
+                
+                # Проверяем кто зашел
+                for uid, username in current_users.items():
+                    if uid not in tracked_users:
+                        tracked_users[uid] = datetime.now()
+                        conn.execute('''
+                            INSERT INTO voice_activity (meeting_id, user_id, discord_username, action)
+                            VALUES (?, ?, ?, 'join')
+                        ''', (meeting_id, uid, username))
+                        conn.commit()
+                
+                # Проверяем кто вышел
+                to_remove = []
+                for uid, join_time in tracked_users.items():
+                    if uid not in current_users:
+                        to_remove.append(uid)
+                        conn.execute('''
+                            INSERT INTO voice_activity (meeting_id, user_id, discord_username, action)
+                            VALUES (?, ?, ?, 'leave')
+                        ''', (meeting_id, uid, username))
+                        conn.commit()
+                
+                for uid in to_remove:
+                    del tracked_users[uid]
+            
+            conn.close()
+            
+        except Exception as e:
+            print(f"Ошибка мониторинга голосового канала: {e}")
+        
+        await asyncio.sleep(10)  # Проверяем каждые 10 секунд
 
 if __name__ == "__main__":
     # Запускаем фоновую задачу
