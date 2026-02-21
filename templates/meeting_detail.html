@@ -189,7 +189,7 @@
     <!-- Already responded -->
     <div class="responded-banner responded-{{ my_response.response }}">
         {% if my_response.response == 'attending' %}
-        ✓ Вы отметились как присутствующий
+        ✓ Вы отметились как присутствующий <span style="color:var(--text3);font-weight:400;margin-left:8px">(изменить нельзя)</span>
         {% else %}
         ⏳ Вы отправили причину отсутствия
         {% if my_response.reason_status == 'pending' %}— ожидает рассмотрения{% endif %}
@@ -202,6 +202,28 @@
     <div class="card" style="padding:16px">
         <div style="font-size:12px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:1px;font-weight:600">Ваша причина</div>
         <div style="font-size:14px;color:var(--text2)">{{ my_response.absence_reason }}</div>
+        {% if meeting.status == 'upcoming' and my_response.response == 'absent' %}
+        <div style="margin-top:12px">
+            <button class="btn btn-ghost btn-sm" onclick="showChangeAbsenceForm()">✏ Изменить причину</button>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- Форма изменения причины для "Не приду" -->
+    {% if meeting.status == 'upcoming' and my_response and my_response.response == 'absent' %}
+    <div id="change-absence-area" style="display:none; margin-top:16px;">
+        <div class="card">
+            <div style="font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;margin-bottom:16px;">Изменить причину</div>
+            <div class="form-group" style="margin-bottom:12px">
+                <label class="form-label">Новая причина отсутствия</label>
+                <textarea id="change-absence-reason" class="form-input" placeholder="Опишите причину..." rows="3">{{ my_response.absence_reason }}</textarea>
+            </div>
+            <div style="display:flex;gap:10px">
+                <button class="btn btn-danger" onclick="updateAbsence()">Обновить причину</button>
+                <button class="btn btn-ghost" onclick="hideChangeAbsenceForm()">Отмена</button>
+            </div>
+        </div>
     </div>
     {% endif %}
 
@@ -409,6 +431,37 @@ function hideAbsenceForm() {
     document.getElementById('absence-area').style.display = 'none';
     document.getElementById('btn-attend').style.display = '';
     document.getElementById('btn-absent').style.display = '';
+}
+
+function showChangeAbsenceForm() {
+    document.getElementById('change-absence-area').style.display = 'block';
+}
+
+function hideChangeAbsenceForm() {
+    document.getElementById('change-absence-area').style.display = 'none';
+}
+
+async function updateAbsence() {
+    const discord = '{{ my_response.discord_username if my_response else "" }}';
+    const reason = document.getElementById('change-absence-reason').value.trim();
+    
+    if (!reason) {
+        toast('Укажите причину', 'error');
+        return;
+    }
+    
+    const res = await apiFetch(`/meetings/${meetingId}/respond`, {
+        response: 'absent',
+        discord_username: discord,
+        absence_reason: reason
+    });
+    
+    if (res.ok) {
+        toast('Причина обновлена', 'success');
+        setTimeout(() => location.reload(), 1200);
+    } else {
+        toast(res.error || 'Ошибка', 'error');
+    }
 }
 
 async function respond(type) {
