@@ -408,9 +408,12 @@
         <div class="card-header">
             <div class="card-title">🎤 Голосовой канал</div>
         </div>
-        <div style="padding:10px 0">
+        <div style="display:flex;flex-direction:column;gap:10px;padding:10px 0">
             <button class="btn btn-ghost" onclick="loadVoiceStats({{ meeting.id }})">
-                📊 Показать статистику присутствия
+                📊 Показать историю голосового канала
+            </button>
+            <button class="btn btn-primary" onclick="loadAttendanceStats({{ meeting.id }})">
+                📈 Полная статистика собрания
             </button>
         </div>
     </div>
@@ -430,6 +433,17 @@
         </div>
         <div class="modal-footer">
             <button class="btn btn-ghost" onclick="closeModal('voice-stats-modal')">Закрыть</button>
+        </div>
+    </div>
+</div>
+
+<!-- Attendance stats modal -->
+<div class="modal-overlay" id="attendance-stats-modal">
+    <div class="modal" style="max-width:700px">
+        <div class="modal-title">📊 Полная статистика собрания</div>
+        <div id="attendance-stats-content" style="max-height:500px;overflow-y:auto"></div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeModal('attendance-stats-modal')">Закрыть</button>
         </div>
     </div>
 </div>
@@ -617,6 +631,57 @@ async function loadVoiceStats(mid) {
     
     document.getElementById('voice-stats-content').innerHTML = html;
     document.getElementById('voice-stats-modal').classList.add('open');
+}
+
+async function loadAttendanceStats(mid) {
+    const res = await fetch(`/meetings/${mid}/attendance-stats`);
+    const data = await res.json();
+    
+    let html = `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px">
+            <div style="background:var(--bg3);padding:15px;border-radius:8px;text-align:center">
+                <div style="font-size:12px;color:var(--text3)">Отметили "Приду"</div>
+                <div style="font-size:24px;font-weight:700;color:var(--green)">${data.attending_site}</div>
+            </div>
+            <div style="background:var(--bg3);padding:15px;border-radius:8px;text-align:center">
+                <div style="font-size:12px;color:var(--text3)">Пришли в голосовой</div>
+                <div style="font-size:24px;font-weight:700;color:var(--green)">${data.total_voice}</div>
+            </div>
+            <div style="background:var(--bg3);padding:15px;border-radius:8px;text-align:center">
+                <div style="font-size:12px;color:var(--text3)">Подтвердили явку</div>
+                <div style="font-size:24px;font-weight:700;color:var(--green)">${data.came_to_voice}</div>
+            </div>
+            <div style="background:var(--bg3);padding:15px;border-radius:8px;text-align:center">
+                <div style="font-size:12px;color:var(--text3)">Не явились</div>
+                <div style="font-size:24px;font-weight:700;color:var(--red)">${data.no_show.length}</div>
+            </div>
+        </div>
+    `;
+    
+    if (data.confirmed && data.confirmed.length > 0) {
+        html += '<h4 style="color:var(--green);margin:10px 0">✅ Отметили и пришли:</h4><ul style="margin-bottom:20px">';
+        data.confirmed.forEach(u => html += `<li>${u.username} (${u.discord})</li>`);
+        html += '</ul>';
+    }
+    
+    if (data.no_show && data.no_show.length > 0) {
+        html += '<h4 style="color:var(--red);margin:10px 0">❌ Отметили но не пришли:</h4><ul style="margin-bottom:20px">';
+        data.no_show.forEach(u => html += `<li>${u.username} (${u.discord})</li>`);
+        html += '</ul>';
+    }
+    
+    if (data.unexpected && data.unexpected.length > 0) {
+        html += '<h4 style="color:var(--orange);margin:10px 0">👥 Пришли без отметки:</h4><ul style="margin-bottom:20px">';
+        data.unexpected.forEach(d => html += `<li>${d}</li>`);
+        html += '</ul>';
+    }
+    
+    if (!data.confirmed?.length && !data.no_show?.length && !data.unexpected?.length) {
+        html += '<p style="text-align:center;color:var(--text3);padding:20px">Нет данных для отображения</p>';
+    }
+    
+    document.getElementById('attendance-stats-content').innerHTML = html;
+    document.getElementById('attendance-stats-modal').classList.add('open');
 }
 
 function closeModal(id) {
