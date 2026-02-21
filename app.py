@@ -239,6 +239,106 @@ def register():
     
     return jsonify({'ok': True, 'message': 'Регистрация успешна, ожидайте подтверждения'})
 
+@app.route('/auth/discord')
+def auth_discord():
+    if not DISCORD_CLIENT_ID:
+        flash('Discord OAuth не настроен', 'error')
+        return redirect(url_for('login'))
+    
+    params = {
+        'client_id': DISCORD_CLIENT_ID,
+        'redirect_uri': DISCORD_REDIRECT_URI,
+        'response_type': 'code',
+        'scope': 'identify'
+    }
+    url = f"https://discord.com/api/oauth2/authorize?{requests.compat.urlencode(params)}"
+    return redirect(url)
+
+@app.route('/auth/discord/callback')
+def auth_discord_callback():
+    code = request.args.get('code')
+    if not code:
+        flash('Ошибка авторизации', 'error')
+        return redirect(url_for('login'))
+    
+    # Обмен кода на токен
+    data = {
+        'client_id': DISCORD_CLIENT_ID,
+        'client_secret': DISCORD_CLIENT_SECRET,
+        'grant_type': 'authorization_code',
+        'code': code,
+        'redirect_uri': DISCORD_REDIRECT_URI
+    }
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    
+    token_resp = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
+    if token_resp.status_code != 200:
+        flash('Ошибка получения токена', 'error')
+        return redirect(url_for('login'))
+    
+    token_data = token_resp.json()
+    access_token = token_data.get('access_token')
+    
+    # Получаем информацию о пользователе
+    user_resp = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}'})
+    if user_resp.status_code != 200:
+        flash('Ошибка получения данных пользователя', 'error')
+        return redirect(url_for('login'))
+    
+    discord_user = user_resp.json()
+    discord_id = discord_user['id']
+    discord_username = discord_user['username']
+    discord_avatar = discord_user.get('avatar')
+    
+    conn = get_db()
+    
+    # Проверяем есть ли пользователь с таким discord_id
+    user = conn.execute('SELECT * FROM users WHERE discord_id=?', (discord_id,)).fetchone()
+    
+    if user:
+        # Уже есть - логиним
+        if not user['approved']:
+            flash('Аккаунт ожидает подтверждения', 'error')
+            conn.close()
+            return redirect(url_for('login'))
+        
+        session['user_id'] = user['id']
+        session['username'] = user['username']
+        session['role'] = user['role']
+        conn.close()
+        return redirect(url_for('dashboard'))
+    
+    # Проверяем есть ли пользователь с таким username (на случай если уже регился по логину)
+    existing = conn.execute('SELECT * FROM users WHERE username=?', (discord_username,)).fetchone()
+    
+    if existing:
+        # Обновляем discord_id у существующего пользователя
+        conn.execute('UPDATE users SET discord_id=?, discord_username=?, discord_avatar=? WHERE id=?',
+                    (discord_id, discord_username, discord_avatar, existing['id']))
+        conn.commit()
+        
+        if not existing['approved']:
+            flash('Аккаунт ожидает подтверждения', 'error')
+            conn.close()
+            return redirect(url_for('login'))
+        
+        session['user_id'] = existing['id']
+        session['username'] = existing['username']
+        session['role'] = existing['role']
+        conn.close()
+        return redirect(url_for('dashboard'))
+    
+    # Создаем нового пользователя
+    conn.execute('''
+        INSERT INTO users (username, discord_id, discord_username, discord_avatar, role, approved)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (discord_username, discord_id, discord_username, discord_avatar, 'newbie', 0))
+    conn.commit()
+    
+    flash('Регистрация успешна, ожидайте подтверждения', 'success')
+    conn.close()
+    return redirect(url_for('login'))
+
 @app.route('/logout')
 def logout():
     session.clear()
